@@ -7,8 +7,10 @@ Think "Jarvis on your desktop", except it's a single small native binary, fully 
 ## Features
 
 - **Global keybind overlay** — bind `nexora toggle` to any key in your compositor; a prompt window appears over your work, streams the answer, and hides on Esc. The first invocation stays resident, so it's instant.
+- **Conversation history** — the overlay keeps the whole conversation, so follow-up questions have context. `Ctrl+N` starts a fresh chat. Conversations are saved to `~/.local/share/nexora/history/` and the last one is restored on launch. Screenshots are never written to history and never resent on follow-ups (they're the token-heavy part).
 - **Explain my screen** — `nexora run explain-screen` grabs a screenshot through the XDG desktop portal, sends it to a vision model, and explains what you're looking at. Define your own presets (translate screen, summarize, whatever) in the config and bind each to its own key.
 - **Any provider** — Anthropic natively, plus every OpenAI-compatible API: OpenAI, OpenRouter, DeepSeek, Gemini (compat endpoint), Ollama / llama.cpp running locally. Pick a different provider+model per task.
+- **In-app settings** — a ⚙ panel to choose the provider, paste an API key (stored in `config.toml`, `chmod 600`), set the model, toggle hidden mode, and copy ready-made keybind snippets. Power users can still hand-edit the TOML; the panel preserves your comments and other keys.
 - **Hidden mode** — where the compositor supports it, the Nexora window is excluded from screen capture: invisible to recordings, streams and screen shares. See the support matrix below — Nexora tells you the truth about what your compositor can do instead of pretending.
 - **Ridiculously light** — native GTK4 in Rust. One binary, no Electron, no web view, no background CPU. It runs on a potato.
 
@@ -24,6 +26,17 @@ Think "Jarvis on your desktop", except it's a single small native binary, fully 
 | X11 (any WM) | regular window | portal | impossible by design (any X client can read any window) |
 
 There is no universal Wayland protocol for excluding a window from capture; Nexora uses each compositor's native mechanism where one exists and shows a clear "visible to capture" badge where it doesn't.
+
+### Why can't it just hide everywhere (with root, or by starting early)?
+
+It can't, and this is architectural — not a permission Nexora can grab:
+
+- **X11**: any connected client can read the whole root window (`XGetImage`), which *already contains* your window's pixels composited by the X server. There's no per-window "don't capture me" in the X protocol. Running as root or starting before the session changes nothing — a recorder reads the server's framebuffer, not Nexora's process.
+- **GNOME (Mutter) / KDE (KWin) / most Wayland**: capture goes *through the compositor* (PipeWire + portal). The compositor composites every window into the frame it hands the recorder. To leave a window out, **the compositor** must support it and choose to. A client — even root, even launched at boot — can't override the compositor's own compositing, because there's no protocol for it. You'd have to patch the compositor itself.
+
+Privilege and timing don't help because the screen recorder never reads *your* process; it reads the compositor's (or X server's) output. That's deliberate: if any app could make itself invisible to a screen share, malware would abuse it. This is exactly why only compositors with a native opt-out (niri; Hyprland via a windowrule) can do it — and why the paid tools that hide on Windows/macOS rely on OS-level client APIs (`SetWindowDisplayAffinity`, `NSWindow.sharingType`) that simply have no equivalent on Linux.
+
+On Hyprland the rule keyword has changed across versions; if hiding doesn't take effect, run `nexora hidden status` and set `hyprland_rule` in `config.toml` to the keyword your version uses.
 
 ## Installing
 
@@ -106,8 +119,9 @@ nexora quit            stop the resident instance
 
 ## Roadmap
 
+- [x] Conversation history in the overlay (follow-up questions)
+- [x] In-app settings panel (provider, API key, model, hidden toggle)
 - [ ] Audio transcription (mic → text via API or local whisper.cpp)
-- [ ] Conversation history in the overlay (follow-up questions)
 - [ ] GlobalShortcuts portal support (keybinds without touching compositor config)
 - [ ] Watch mode — periodic screen understanding with cost controls (this burns tokens; it will be opt-in and heavily rate-limited)
 - [ ] Prebuilt packages (.deb / .rpm / AUR)

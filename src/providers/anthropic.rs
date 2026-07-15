@@ -7,31 +7,51 @@ use serde_json::{Value, json};
 
 use super::{ChatRequest, StreamEvent, check_status, consume_sse, http_client};
 use crate::config::ProviderConfig;
+use crate::conversation::Role;
 
 pub fn build_body(request: &ChatRequest) -> Value {
-    let mut content = Vec::new();
-    if let Some(png) = &request.image_png {
-        content.push(json!({
-            "type": "image",
-            "source": {
-                "type": "base64",
-                "media_type": "image/png",
-                "data": base64::engine::general_purpose::STANDARD.encode(png),
+    let last = request.messages.len().saturating_sub(1);
+    let messages: Vec<Value> = request
+        .messages
+        .iter()
+        .enumerate()
+        .map(|(i, (role, text))| {
+            let mut content = Vec::new();
+            // The screenshot rides on the final (newest) user message.
+            if i == last
+                && let Some(png) = &request.image_png
+            {
+                content.push(json!({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/png",
+                        "data": base64::engine::general_purpose::STANDARD.encode(png),
+                    }
+                }));
             }
-        }));
-    }
-    content.push(json!({ "type": "text", "text": request.prompt }));
+            content.push(json!({ "type": "text", "text": text }));
+            json!({ "role": role_str(*role), "content": content })
+        })
+        .collect();
 
     let mut body = json!({
         "model": request.model,
         "max_tokens": request.max_tokens,
         "stream": true,
-        "messages": [{ "role": "user", "content": content }],
+        "messages": messages,
     });
     if let Some(system) = &request.system {
         body["system"] = json!(system);
     }
     body
+}
+
+fn role_str(role: Role) -> &'static str {
+    match role {
+        Role::User => "user",
+        Role::Assistant => "assistant",
+    }
 }
 
 pub async fn stream(
@@ -77,7 +97,7 @@ mod tests {
         ChatRequest {
             model: "claude-sonnet-5".into(),
             system: Some("be brief".into()),
-            prompt: "what is this?".into(),
+            messages: vec![(Role::User, "what is this?".into())],
             image_png: Some(vec![1, 2, 3]),
             max_tokens: 64,
         }
@@ -102,5 +122,28 @@ mod tests {
         let body = build_body(&request);
         assert!(body.get("system").is_none());
         assert_eq!(body["messages"][0]["content"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn multi_turn_attaches_image_only_to_last_message() {
+        let request = ChatRequest {
+            model: "claude-sonnet-5".into(),
+            system: None,
+            messages: vec![
+                (Role::User, "first".into()),
+                (Role::Assistant, "reply".into()),
+                (Role::User, "second".into()),
+            ],
+            image_png: Some(vec![7]),
+            max_tokens: 64,
+        };
+        let body = build_body(&request);
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[0]["role"], "user");
+        assert_eq!(messages[1]["role"], "assistant");
+        // Only the final user message carries the image block.
+        assert_eq!(messages[0]["content"].as_array().unwrap().len(), 1);
+        assert_eq!(messages[2]["content"][0]["type"], "image");
     }
 }

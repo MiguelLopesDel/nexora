@@ -30,6 +30,10 @@ pub struct General {
     /// Use layer-shell overlay when the compositor supports it: "auto", "on", "off".
     #[serde(default = "default_layer_shell")]
     pub layer_shell: String,
+    /// Hyprland window-rule keyword used for anti-capture. Depends on your
+    /// Hyprland version; see `nexora hidden status`.
+    #[serde(default = "default_hyprland_rule")]
+    pub hyprland_rule: String,
     /// Window width in pixels.
     #[serde(default = "default_width")]
     pub width: i32,
@@ -43,10 +47,15 @@ impl Default for General {
         Self {
             hidden: true,
             layer_shell: default_layer_shell(),
+            hyprland_rule: default_hyprland_rule(),
             width: default_width(),
             height: default_height(),
         }
     }
+}
+
+fn default_hyprland_rule() -> String {
+    crate::hidden::DEFAULT_HYPRLAND_RULE.to_string()
 }
 
 fn default_true() -> bool {
@@ -160,6 +169,24 @@ impl Config {
         Ok(config)
     }
 
+    /// The bundled example configuration, parsed. Used to seed the settings
+    /// panel with provider choices before the user has a config file.
+    pub fn example() -> Self {
+        toml::from_str(EXAMPLE_CONFIG).expect("bundled example config must parse")
+    }
+
+    /// Sorted provider names, falling back to the example's when none are
+    /// configured yet.
+    pub fn provider_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = if self.providers.is_empty() {
+            Self::example().providers.keys().cloned().collect()
+        } else {
+            self.providers.keys().cloned().collect()
+        };
+        names.sort();
+        names
+    }
+
     /// Task lookup with a clear error listing what is configured.
     pub fn task(&self, name: &str) -> Result<&TaskConfig> {
         self.tasks.get(name).with_context(|| {
@@ -201,6 +228,75 @@ impl Config {
             known.join(", ")
         )
     }
+}
+
+/// Settings the in-app preferences panel can change.
+pub struct SettingsUpdate {
+    pub hidden: bool,
+    pub hyprland_rule: String,
+    /// Task being configured (usually "ask").
+    pub task: String,
+    pub provider: String,
+    pub model: String,
+    /// When `Some` and non-empty, stored as the provider's literal api_key.
+    pub api_key: Option<String>,
+}
+
+/// Apply settings to config.toml without discarding comments or unrelated keys.
+///
+/// Creates the file from the bundled example if it does not exist yet.
+pub fn apply_settings(update: &SettingsUpdate) -> Result<()> {
+    use toml_edit::{DocumentMut, Item, Table, value};
+
+    let path = config_path();
+    let mut doc: DocumentMut = if path.exists() {
+        std::fs::read_to_string(&path)?
+            .parse()
+            .with_context(|| format!("parsing {}", path.display()))?
+    } else {
+        std::fs::create_dir_all(config_dir())?;
+        EXAMPLE_CONFIG.parse()?
+    };
+
+    // Ensure a table exists at `doc[key]`, creating it if missing.
+    fn table<'a>(doc: &'a mut DocumentMut, key: &str) -> &'a mut Table {
+        doc.entry(key)
+            .or_insert_with(|| Item::Table(Table::new()))
+            .as_table_mut()
+            .expect("config section must be a table")
+    }
+    fn subtable<'a>(parent: &'a mut Table, key: &str) -> &'a mut Table {
+        parent
+            .entry(key)
+            .or_insert_with(|| Item::Table(Table::new()))
+            .as_table_mut()
+            .expect("config subsection must be a table")
+    }
+
+    table(&mut doc, "general")["hidden"] = value(update.hidden);
+    table(&mut doc, "general")["hyprland_rule"] = value(update.hyprland_rule.clone());
+
+    let tasks = table(&mut doc, "tasks");
+    let task = subtable(tasks, &update.task);
+    task["provider"] = value(update.provider.clone());
+    task["model"] = value(update.model.clone());
+
+    if let Some(key) = &update.api_key
+        && !key.is_empty()
+    {
+        let providers = table(&mut doc, "providers");
+        let provider = subtable(providers, &update.provider);
+        provider["api_key"] = value(key.clone());
+    }
+
+    std::fs::write(&path, doc.to_string())
+        .with_context(|| format!("writing {}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(())
 }
 
 /// Write the example config to the standard path, never overwriting.
@@ -251,6 +347,40 @@ mod tests {
             api_key_env: Some("DEFINITELY_NOT_SET_12345".into()),
         };
         assert_eq!(provider.resolve_api_key().unwrap(), "sk-test");
+    }
+
+    #[test]
+    fn apply_settings_writes_and_reloads() {
+        // Isolate config_path() to a temp dir for this test.
+        let dir = std::env::temp_dir().join(format!("nexora-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        unsafe {
+            std::env::set_var("XDG_CONFIG_HOME", &dir);
+        }
+
+        let update = SettingsUpdate {
+            hidden: false,
+            hyprland_rule: "noscreencopy".into(),
+            task: "ask".into(),
+            provider: "openrouter".into(),
+            model: "some/model".into(),
+            api_key: Some("sk-secret".into()),
+        };
+        apply_settings(&update).unwrap();
+
+        let config = Config::load().unwrap();
+        assert!(!config.general.hidden);
+        let task = config.task("ask").unwrap();
+        assert_eq!(task.provider, "openrouter");
+        assert_eq!(task.model, "some/model");
+        // The provider (seeded from the example) now carries the literal key.
+        let provider = config.provider_for(task).unwrap();
+        assert_eq!(provider.resolve_api_key().unwrap(), "sk-secret");
+
+        let _ = std::fs::remove_dir_all(&dir);
+        unsafe {
+            std::env::remove_var("XDG_CONFIG_HOME");
+        }
     }
 
     #[test]

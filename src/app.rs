@@ -99,7 +99,7 @@ fn overlay(app: &gtk::Application) -> Rc<Overlay> {
         };
         // Apply before the window maps so compositor rules match it on first map.
         let hidden_state = if config.general.hidden {
-            let state = hidden::apply();
+            let state = hidden::apply(&config.general.hyprland_rule);
             match &state {
                 HiddenState::Active => {}
                 HiddenState::Manual(detail) | HiddenState::Unsupported(detail) => {

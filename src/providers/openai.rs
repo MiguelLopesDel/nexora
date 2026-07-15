@@ -10,29 +10,33 @@ use serde_json::{Value, json};
 
 use super::{ChatRequest, StreamEvent, check_status, consume_sse, http_client};
 use crate::config::ProviderConfig;
+use crate::conversation::Role;
 
 pub fn build_body(request: &ChatRequest) -> Value {
-    // Plain string content has the widest server compatibility; only use
-    // the multimodal array form when an image is actually attached.
-    let user_content = match &request.image_png {
-        Some(png) => {
-            let data_uri = format!(
-                "data:image/png;base64,{}",
-                base64::engine::general_purpose::STANDARD.encode(png)
-            );
-            json!([
-                { "type": "text", "text": request.prompt },
-                { "type": "image_url", "image_url": { "url": data_uri } },
-            ])
-        }
-        None => json!(request.prompt),
-    };
-
     let mut messages = Vec::new();
     if let Some(system) = &request.system {
         messages.push(json!({ "role": "system", "content": system }));
     }
-    messages.push(json!({ "role": "user", "content": user_content }));
+
+    let last = request.messages.len().saturating_sub(1);
+    for (i, (role, text)) in request.messages.iter().enumerate() {
+        // Plain string content has the widest server compatibility; only use
+        // the multimodal array form for the final turn when an image is set.
+        let content = match (i == last, &request.image_png) {
+            (true, Some(png)) => {
+                let data_uri = format!(
+                    "data:image/png;base64,{}",
+                    base64::engine::general_purpose::STANDARD.encode(png)
+                );
+                json!([
+                    { "type": "text", "text": text },
+                    { "type": "image_url", "image_url": { "url": data_uri } },
+                ])
+            }
+            _ => json!(text),
+        };
+        messages.push(json!({ "role": role_str(*role), "content": content }));
+    }
 
     json!({
         "model": request.model,
@@ -40,6 +44,13 @@ pub fn build_body(request: &ChatRequest) -> Value {
         "stream": true,
         "messages": messages,
     })
+}
+
+fn role_str(role: Role) -> &'static str {
+    match role {
+        Role::User => "user",
+        Role::Assistant => "assistant",
+    }
 }
 
 pub async fn stream(
@@ -81,7 +92,7 @@ mod tests {
         let request = ChatRequest {
             model: "gpt-test".into(),
             system: None,
-            prompt: "hi".into(),
+            messages: vec![(Role::User, "hi".into())],
             image_png: None,
             max_tokens: 32,
         };
@@ -95,7 +106,7 @@ mod tests {
         let request = ChatRequest {
             model: "gpt-test".into(),
             system: Some("sys".into()),
-            prompt: "what?".into(),
+            messages: vec![(Role::User, "what?".into())],
             image_png: Some(vec![9]),
             max_tokens: 32,
         };
@@ -110,5 +121,26 @@ mod tests {
                 .unwrap()
                 .starts_with("data:image/png;base64,")
         );
+    }
+
+    #[test]
+    fn multi_turn_history_maps_roles_in_order() {
+        let request = ChatRequest {
+            model: "gpt-test".into(),
+            system: Some("sys".into()),
+            messages: vec![
+                (Role::User, "a".into()),
+                (Role::Assistant, "b".into()),
+                (Role::User, "c".into()),
+            ],
+            image_png: None,
+            max_tokens: 32,
+        };
+        let messages = build_body(&request);
+        let messages = messages["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 4); // system + 3 turns
+        assert_eq!(messages[1]["role"], "user");
+        assert_eq!(messages[2]["role"], "assistant");
+        assert_eq!(messages[3]["content"], "c");
     }
 }

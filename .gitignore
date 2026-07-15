@@ -1,2 +1,6 @@
 /target
 .env
+
+# Local-only: opt-in mold linker (see CONTRIBUTING.md). Not committed so the
+# default build works for everyone without mold/clang installed.
+/.cargo/config.toml

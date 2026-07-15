@@ -1,5 +1,6 @@
 mod app;
 mod config;
+mod conversation;
 mod hidden;
 mod providers;
 mod screenshot;

@@ -14,6 +14,21 @@ Thanks for wanting to help! Bug reports, ideas and pull requests are all welcome
    ```
 4. Keep commits and code comments in English.
 
+### Faster builds (optional)
+
+Release builds use thin LTO, so they are already fast (~15–20s incremental).
+To shave link time further, install [mold](https://github.com/rui314/mold) and
+create `.cargo/config.toml` locally (it is git-ignored):
+
+```toml
+[target.x86_64-unknown-linux-gnu]
+linker = "clang"
+rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+```
+
+For the smallest release artifact (fat LTO, `panic = abort`), build the `dist`
+profile: `cargo build --profile dist`.
+
 ### Guidelines
 
 - **Stay light.** Nexora's whole identity is being ridiculously lightweight. New dependencies need a strong justification; anything that adds a background thread, a busy loop or memory overhead will be scrutinized.

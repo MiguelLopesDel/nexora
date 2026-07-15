@@ -91,11 +91,18 @@ pub fn niri_rule() -> String {
     )
 }
 
+/// The Hyprland window-rule keyword tried by default. Newer Hyprland releases
+/// expose `noscreencopy`; some builds/forks use other spellings, so the exact
+/// token is configurable (`general.hyprland_rule`).
+pub const DEFAULT_HYPRLAND_RULE: &str = "noscreencopy";
+
 /// Try to enable anti-capture. Call before the window is mapped so
 /// compositor-side rules apply to it on first map.
-pub fn apply() -> HiddenState {
+///
+/// `rule` is the Hyprland rule keyword to use (see [`DEFAULT_HYPRLAND_RULE`]).
+pub fn apply(rule: &str) -> HiddenState {
     match Compositor::detect() {
-        Compositor::Hyprland => apply_hyprland(),
+        Compositor::Hyprland => apply_hyprland(rule),
         Compositor::Niri => HiddenState::Manual(format!(
             "niri supports hiding, but only via config. Add to config.kdl:\n{}",
             niri_rule()
@@ -108,23 +115,24 @@ pub fn apply() -> HiddenState {
     }
 }
 
-fn apply_hyprland() -> HiddenState {
+fn apply_hyprland(rule_keyword: &str) -> HiddenState {
     // Hyprland >= 0.51 merged the old windowrulev2 syntax into windowrule;
     // try the merged form first, then the legacy keyword for older releases.
-    let rule = format!("noscreenshare, class:^({})$", regex_escape(APP_ID));
+    let rule = format!("{rule_keyword}, class:^({})$", regex_escape(APP_ID));
+    let mut last_response = String::new();
     for keyword in ["windowrule", "windowrulev2"] {
         match Command::new("hyprctl")
             .args(["keyword", keyword, &rule])
             .output()
         {
-            Ok(output) if output.status.success() => {
-                let stdout = String::from_utf8_lossy(&output.stdout);
+            Ok(output) => {
                 // hyprctl exits 0 even on config errors; it prints "ok" on success.
+                let stdout = String::from_utf8_lossy(&output.stdout);
                 if stdout.trim().eq_ignore_ascii_case("ok") {
                     return HiddenState::Active;
                 }
+                last_response = stdout.trim().to_string();
             }
-            Ok(_) => {}
             Err(err) => {
                 return HiddenState::Manual(format!(
                     "could not run hyprctl ({err}); add this rule to hyprland.conf:\n\
@@ -134,7 +142,14 @@ fn apply_hyprland() -> HiddenState {
         }
     }
     HiddenState::Manual(format!(
-        "hyprctl rejected the rule (old Hyprland?); add to hyprland.conf:\nwindowrule = {rule}"
+        "Hyprland did not accept the rule \"{rule_keyword}\" (response: {}). Your Hyprland \
+         version may name it differently — set `hyprland_rule` in config.toml to the correct \
+         keyword, or add it manually to hyprland.conf:\nwindowrule = {rule}",
+        if last_response.is_empty() {
+            "none".into()
+        } else {
+            last_response
+        }
     ))
 }
 
@@ -154,7 +169,8 @@ pub fn status_report() -> String {
     let compositor = Compositor::detect();
     let support = match compositor {
         Compositor::Hyprland => {
-            "supported — applied automatically at startup (windowrule noscreenshare)"
+            "best-effort — Nexora sets a Hyprland windowrule at startup; the exact keyword \
+             (general.hyprland_rule) depends on your Hyprland version"
         }
         Compositor::Niri => "supported — requires a window-rule in config.kdl (shown below)",
         Compositor::Gnome | Compositor::Kde | Compositor::Cosmic | Compositor::OtherWayland => {

@@ -5,6 +5,10 @@
 [general]
 # Ask the compositor to hide Nexora from screen capture (Hyprland/niri only, see README).
 hidden = true
+# Hyprland window-rule keyword for anti-capture. The token varies by Hyprland
+# version/fork ("noscreencopy", "noscreenshare", …). Run `nexora hidden status`
+# and check your Hyprland docs if hiding doesn't take effect.
+hyprland_rule = "noscreencopy"
 # Overlay via layer-shell: "auto" (use when supported), "on", "off" (plain window).
 layer_shell = "auto"
 width = 620

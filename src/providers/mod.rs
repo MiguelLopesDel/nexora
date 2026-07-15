@@ -8,24 +8,32 @@ use anyhow::Result;
 use async_channel::Sender;
 
 use crate::config::{ProviderConfig, ProviderKind, TaskConfig};
+use crate::conversation::Role;
 
-/// One user turn. The MVP is single-shot (no conversation history yet).
+/// A chat request carrying the full conversation context.
+///
+/// `messages` is the ordered history ending with the new user turn; `image_png`
+/// is attached to that final user message only.
 #[derive(Debug, Clone)]
 pub struct ChatRequest {
     pub model: String,
     pub system: Option<String>,
-    pub prompt: String,
-    /// PNG screenshot to attach, if any.
+    pub messages: Vec<(Role, String)>,
+    /// PNG screenshot attached to the last user message, if any.
     pub image_png: Option<Vec<u8>>,
     pub max_tokens: u32,
 }
 
 impl ChatRequest {
-    pub fn from_task(task: &TaskConfig, prompt: String, image_png: Option<Vec<u8>>) -> Self {
+    pub fn new(
+        task: &TaskConfig,
+        messages: Vec<(Role, String)>,
+        image_png: Option<Vec<u8>>,
+    ) -> Self {
         Self {
             model: task.model.clone(),
             system: task.system.clone(),
-            prompt,
+            messages,
             image_png,
             max_tokens: task.max_tokens,
         }
