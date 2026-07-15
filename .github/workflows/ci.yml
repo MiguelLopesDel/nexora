@@ -11,13 +11,13 @@ env:
 jobs:
   check:
     runs-on: ubuntu-latest
+    # Fedora ships gtk4-layer-shell; Ubuntu LTS (24.04) does not yet.
+    container: fedora:latest
     steps:
       - uses: actions/checkout@v4
 
       - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libgtk-4-dev libgtk4-layer-shell-dev
+        run: dnf install -y gcc gtk4-devel gtk4-layer-shell-devel openssl-devel curl tar xz
 
       - uses: dtolnay/rust-toolchain@stable
         with:
