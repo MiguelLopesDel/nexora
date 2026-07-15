@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Nexora
+Comment=Featherweight AI overlay assistant
+Exec=nexora show
+Icon=dev.nexora.Nexora
+Terminal=false
+Categories=Utility;
+Keywords=AI;assistant;overlay;LLM;
+StartupWMClass=dev.nexora.Nexora
+NoDisplay=false

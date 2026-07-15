@@ -1,0 +1,76 @@
+window.nexora {
+    background-color: rgba(17, 19, 27, 0.94);
+    border-radius: 14px;
+    border: 1px solid rgba(255, 255, 255, 0.09);
+    color: #e6e6ec;
+}
+
+.nexora-title {
+    font-weight: 700;
+    font-size: 15px;
+    color: #b7c4ff;
+}
+
+.nexora-badge {
+    font-size: 11px;
+    padding: 2px 10px;
+    border-radius: 999px;
+    background-color: rgba(255, 255, 255, 0.08);
+    color: #9aa3b5;
+}
+
+.nexora-badge.hidden-active {
+    background-color: rgba(70, 160, 90, 0.25);
+    color: #8fd9a0;
+}
+
+.nexora-badge.hidden-off {
+    background-color: rgba(190, 90, 70, 0.22);
+    color: #e8a693;
+}
+
+.nexora-response {
+    background-color: transparent;
+    color: #e6e6ec;
+    font-size: 14px;
+}
+
+.nexora-response text {
+    background-color: transparent;
+    color: #e6e6ec;
+}
+
+.nexora-status {
+    font-size: 11px;
+    color: #8b93a7;
+}
+
+entry.nexora-entry {
+    background-color: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    border-radius: 10px;
+    color: #e6e6ec;
+    caret-color: #b7c4ff;
+    min-height: 34px;
+    padding: 0 10px;
+}
+
+entry.nexora-entry:focus-within {
+    border-color: rgba(140, 160, 255, 0.55);
+}
+
+button.nexora-attach {
+    background-color: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    border-radius: 10px;
+    color: #9aa3b5;
+    min-height: 34px;
+    min-width: 38px;
+    padding: 0;
+}
+
+button.nexora-attach:checked {
+    background-color: rgba(140, 160, 255, 0.22);
+    color: #b7c4ff;
+    border-color: rgba(140, 160, 255, 0.55);
+}

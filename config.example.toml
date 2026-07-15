@@ -1,0 +1,75 @@
+# Nexora configuration — lives at ~/.config/nexora/config.toml
+# Keep this file private (chmod 600) if you put API keys in it;
+# prefer api_key_env so secrets stay in your environment.
+
+[general]
+# Ask the compositor to hide Nexora from screen capture (Hyprland/niri only, see README).
+hidden = true
+# Overlay via layer-shell: "auto" (use when supported), "on", "off" (plain window).
+layer_shell = "auto"
+width = 620
+height = 440
+
+# ------------------------------------------------------------------
+# Providers — "kind" selects the wire protocol:
+#   anthropic  → Anthropic Messages API
+#   openai     → any OpenAI-compatible API (OpenAI, OpenRouter,
+#                DeepSeek, Gemini compat endpoint, Ollama, llama.cpp…)
+# ------------------------------------------------------------------
+
+[providers.anthropic]
+kind = "anthropic"
+api_key_env = "ANTHROPIC_API_KEY"
+
+[providers.openai]
+kind = "openai"
+api_key_env = "OPENAI_API_KEY"
+
+[providers.openrouter]
+kind = "openai"
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+
+[providers.deepseek]
+kind = "openai"
+base_url = "https://api.deepseek.com/v1"
+api_key_env = "DEEPSEEK_API_KEY"
+
+[providers.gemini]
+kind = "openai"
+base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
+api_key_env = "GEMINI_API_KEY"
+
+[providers.ollama]
+kind = "openai"
+base_url = "http://localhost:11434/v1"
+api_key = "ollama" # Ollama ignores the key but the field must be set
+
+# ------------------------------------------------------------------
+# Tasks — pick a provider+model per job. "ask" is the default task.
+# ------------------------------------------------------------------
+
+[tasks.ask]
+provider = "anthropic"
+model = "claude-sonnet-5"
+system = "You are Nexora, a concise on-screen assistant. Answer briefly and directly."
+
+[tasks.explain-screen]
+provider = "anthropic"
+model = "claude-sonnet-5"
+max_tokens = 1024
+
+# ------------------------------------------------------------------
+# Presets — fire with `nexora run <name>` (bind them to keys in your
+# compositor). "explain-screen" is built in, but can be overridden.
+# ------------------------------------------------------------------
+
+[presets.explain-screen]
+prompt = "Explain what is on my screen. Focus on unusual terms, errors, and anything I would want clarified."
+attach_screen = true
+task = "explain-screen"
+
+[presets.translate-screen]
+prompt = "Translate the text on my screen to Brazilian Portuguese. Only output the translation."
+attach_screen = true
+task = "explain-screen"
