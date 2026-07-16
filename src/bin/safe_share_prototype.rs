@@ -437,7 +437,8 @@ fn run_marker() -> ExitCode {
 
     let pid_path = marker_pid_path();
     let _ = std::fs::write(&pid_path, std::process::id().to_string());
-    let status = app.run();
+    // GApplication would reject the unknown --marker option; don't pass args.
+    let status = app.run_with_args::<&str>(&[]);
     let _ = std::fs::remove_file(pid_path);
     status.into()
 }
