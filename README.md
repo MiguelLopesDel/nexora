@@ -141,6 +141,27 @@ example config). It works for Nexora itself and for any other
 OpenAI-compatible client on the machine. Requests never leave localhost
 except toward the configured upstream and search backend.
 
+### Bring your own backend
+
+The relay is optional, not a lock-in: Nexora speaks to anything that
+serves the OpenAI chat protocol, so an external backend that manages
+models for you plugs straight in as a `[providers.X]` entry with
+`kind = "openai"` and its `base_url`. Known-good examples:
+
+- **LiteLLM proxy** — one gateway over dozens of providers with routing,
+  fallbacks, budgets, and key management (`litellm --model
+  ollama_chat/qwen3:4b`; note the `ollama_chat/` prefix — plain `ollama/`
+  uses Ollama's legacy endpoint and silently drops tool calls).
+- **LM Studio / LocalAI / llama.cpp server** — local model managers with
+  built-in OpenAI-compatible endpoints.
+- **Open WebUI, Dify, and similar agent platforms** — expose their
+  assistants (with their own tools and knowledge bases) over the same
+  protocol.
+
+These stack: the relay's `upstream` can itself be one of these backends,
+so an externally managed model still gets Nexora's web search and
+compaction on top. Verified chain: Nexora → relay → LiteLLM → Ollama.
+
 ### Local chat models
 
 The **Providers** settings page has the same manager for chat models: pick a
