@@ -7,6 +7,7 @@ mod providers;
 mod screenshot;
 mod ui;
 mod vision;
+mod whisper;
 
 use std::sync::OnceLock;
 

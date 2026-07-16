@@ -17,7 +17,8 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install system dependencies
-        run: dnf install -y gcc gtk4-devel gtk4-layer-shell-devel openssl-devel curl tar xz
+        # gcc-c++ and cmake build the vendored whisper.cpp (local transcription).
+        run: dnf install -y gcc gcc-c++ cmake gtk4-devel gtk4-layer-shell-devel openssl-devel curl tar xz
 
       - uses: dtolnay/rust-toolchain@stable
         with:

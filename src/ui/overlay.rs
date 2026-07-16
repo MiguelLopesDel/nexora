@@ -17,6 +17,7 @@ use crate::hidden::{self, HiddenState};
 use crate::meeting::{self, SessionEvent};
 use crate::providers::{ChatRequest, StreamEvent, stream_chat};
 use crate::vision;
+use crate::whisper;
 use crate::{runtime, screenshot};
 
 /// Widgets of the settings panel, kept so Save can read them back.
@@ -58,6 +59,12 @@ struct MeetingSettingsWidgets {
     audio_device: gtk::Entry,
     chunk_seconds: gtk::SpinButton,
     silence_threshold: gtk::SpinButton,
+    transcription_backend: gtk::DropDown,
+    whisper_catalog: gtk::DropDown,
+    whisper_download: gtk::Button,
+    whisper_remove: gtk::Button,
+    whisper_progress: gtk::ProgressBar,
+    whisper_status: gtk::Label,
     transcription_provider: gtk::DropDown,
     transcription_model: gtk::Entry,
     input_language: gtk::Entry,
@@ -318,16 +325,29 @@ impl Overlay {
             let config = self.config.borrow();
             let settings = config.meeting.clone();
             let vision_settings = config.vision.clone();
-            let transcription_provider = config
-                .providers
-                .get(&settings.transcription_provider)
-                .cloned()
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "transcription provider `{}` is not configured",
-                        settings.transcription_provider
-                    )
-                });
+            let transcription = if settings.transcription_backend == "local" {
+                let model_path = crate::whisper::model_path(&settings.whisper_model);
+                if model_path.exists() {
+                    Ok(meeting::TranscriptionBackend::Local { model_path })
+                } else {
+                    Err(anyhow::anyhow!(
+                        "local whisper model `{}` is not downloaded — open Settings → Live meeting to download it, or switch transcription to remote",
+                        settings.whisper_model
+                    ))
+                }
+            } else {
+                config
+                    .providers
+                    .get(&settings.transcription_provider)
+                    .cloned()
+                    .map(|provider| meeting::TranscriptionBackend::Remote { provider })
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "transcription provider `{}` is not configured",
+                            settings.transcription_provider
+                        )
+                    })
+            };
             let analysis = config
                 .task(&settings.analysis_task)
                 .and_then(|task| Ok((task.clone(), config.provider_for(task)?.clone())));
@@ -345,21 +365,18 @@ impl Overlay {
             } else {
                 Ok(None)
             };
-            match (transcription_provider, analysis, vision_provider, profile) {
-                (
-                    Ok(transcription_provider),
-                    Ok((task, provider)),
-                    Ok(vision_provider),
-                    Ok(profile),
-                ) => Ok((
-                    settings,
-                    transcription_provider,
-                    task,
-                    provider,
-                    vision_settings,
-                    vision_provider,
-                    profile,
-                )),
+            match (transcription, analysis, vision_provider, profile) {
+                (Ok(transcription), Ok((task, provider)), Ok(vision_provider), Ok(profile)) => {
+                    Ok((
+                        settings,
+                        transcription,
+                        task,
+                        provider,
+                        vision_settings,
+                        vision_provider,
+                        profile,
+                    ))
+                }
                 (Err(err), _, _, _)
                 | (_, Err(err), _, _)
                 | (_, _, Err(err), _)
@@ -368,7 +385,7 @@ impl Overlay {
         };
         let (
             settings,
-            transcription_provider,
+            transcription,
             task,
             analysis_provider,
             vision_settings,
@@ -398,7 +415,7 @@ impl Overlay {
         runtime().spawn(meeting::run_session(
             settings,
             meeting::SessionServices {
-                transcription_provider,
+                transcription,
                 analysis_task: task,
                 analysis_provider,
                 vision_settings,
@@ -1054,6 +1071,17 @@ impl Overlay {
         let chunk_seconds = spin(1.0, 60.0, settings.chunk_seconds as f64);
         let silence_threshold = spin(0.0, 3000.0, settings.silence_threshold as f64);
 
+        let transcription_backend = gtk::DropDown::from_strings(&[
+            "Local (whisper.cpp, audio stays on this computer)",
+            "Remote API (uploads audio to the provider)",
+        ]);
+        transcription_backend.set_selected(match settings.transcription_backend.as_str() {
+            "remote" => 1,
+            _ => 0,
+        });
+        let (whisper_catalog, whisper_download, whisper_remove, whisper_progress, whisper_status) =
+            build_whisper_manager(&settings.whisper_model);
+
         let provider_strs: Vec<&str> = provider_names.iter().map(String::as_str).collect();
         let transcription_provider = gtk::DropDown::from_strings(&provider_strs);
         if let Some(index) = provider_names
@@ -1118,6 +1146,12 @@ impl Overlay {
             audio_device,
             chunk_seconds,
             silence_threshold,
+            transcription_backend,
+            whisper_catalog,
+            whisper_download,
+            whisper_remove,
+            whisper_progress,
+            whisper_status,
             transcription_provider,
             transcription_model,
             input_language,
@@ -1522,6 +1556,13 @@ impl Overlay {
             audio_device: meeting_widgets.audio_device.text().trim().into(),
             chunk_seconds: meeting_widgets.chunk_seconds.value_as_int() as u64,
             silence_threshold: meeting_widgets.silence_threshold.value_as_int() as u16,
+            transcription_backend: if meeting_widgets.transcription_backend.selected() == 1 {
+                "remote".into()
+            } else {
+                "local".into()
+            },
+            whisper_model: selected_whisper_model(&meeting_widgets.whisper_catalog)
+                .unwrap_or_else(|| "base".into()),
             transcription_provider,
             transcription_model: meeting_widgets.transcription_model.text().trim().into(),
             input_language: meeting_widgets.input_language.text().trim().into(),
@@ -1859,6 +1900,134 @@ fn spin(min: f64, max: f64, value: f64) -> gtk::SpinButton {
     control
 }
 
+/// Catalog dropdown plus download/remove controls for local whisper models.
+fn build_whisper_manager(
+    selected_model: &str,
+) -> (
+    gtk::DropDown,
+    gtk::Button,
+    gtk::Button,
+    gtk::ProgressBar,
+    gtk::Label,
+) {
+    let labels: Vec<String> = whisper::PRESETS
+        .iter()
+        .map(|preset| {
+            format!(
+                "{} · {} · {} — {}",
+                preset.id, preset.download, preset.size, preset.description
+            )
+        })
+        .collect();
+    let values: Vec<&str> = labels.iter().map(String::as_str).collect();
+    let catalog = gtk::DropDown::from_strings(&values);
+    if let Some(index) = whisper::PRESETS
+        .iter()
+        .position(|preset| preset.id == selected_model)
+    {
+        catalog.set_selected(index as u32);
+    }
+    let download = gtk::Button::with_label("Download selected model");
+    download.add_css_class("nexora-attach");
+    let remove = gtk::Button::with_label("Remove selected model");
+    remove.add_css_class("nexora-attach");
+    let progress = gtk::ProgressBar::new();
+    progress.set_show_text(true);
+    progress.set_visible(false);
+    let status = note_label(&whisper_status_text());
+
+    let catalog_for_download = catalog.clone();
+    let status_for_download = status.clone();
+    let progress_for_download = progress.clone();
+    let download_button = download.clone();
+    download.connect_clicked(move |_| {
+        let Some(model) = selected_whisper_model(&catalog_for_download) else {
+            return;
+        };
+        status_for_download.set_text(&format!("Downloading ggml-{model}.bin…"));
+        progress_for_download.set_fraction(0.0);
+        progress_for_download.set_text(Some("Starting…"));
+        progress_for_download.set_visible(true);
+        download_button.set_sensitive(false);
+        let (progress_tx, progress_rx) = async_channel::unbounded();
+        let (done_tx, done_rx) = async_channel::bounded(1);
+        runtime().spawn(async move {
+            let result = whisper::download_model(&model, progress_tx).await;
+            let _ = done_tx.send(result).await;
+        });
+        let status = status_for_download.clone();
+        let bar = progress_for_download.clone();
+        let button = download_button.clone();
+        glib::spawn_future_local(async move {
+            loop {
+                while let Ok(update) = progress_rx.try_recv() {
+                    if let Some(total) = update.total.filter(|total| *total > 0) {
+                        let fraction = update.completed as f64 / total as f64;
+                        bar.set_fraction(fraction);
+                        bar.set_text(Some(&format!(
+                            "{} of {} · {:.0}%",
+                            vision::format_bytes(update.completed),
+                            vision::format_bytes(total),
+                            fraction * 100.0
+                        )));
+                    } else {
+                        bar.set_text(Some(&vision::format_bytes(update.completed)));
+                    }
+                }
+                if let Ok(result) = done_rx.try_recv() {
+                    button.set_sensitive(true);
+                    match result {
+                        Ok(()) => {
+                            bar.set_fraction(1.0);
+                            bar.set_text(Some("Complete"));
+                            status.set_text(&whisper_status_text());
+                        }
+                        Err(err) => {
+                            bar.set_visible(false);
+                            status.set_text(&format!("Download failed: {err:#}"));
+                        }
+                    }
+                    break;
+                }
+                glib::timeout_future(Duration::from_millis(100)).await;
+            }
+        });
+    });
+
+    let catalog_for_remove = catalog.clone();
+    let status_for_remove = status.clone();
+    remove.connect_clicked(move |_| {
+        let Some(model) = selected_whisper_model(&catalog_for_remove) else {
+            return;
+        };
+        match whisper::remove_model(&model) {
+            Ok(()) => status_for_remove.set_text(&whisper_status_text()),
+            Err(err) => status_for_remove.set_text(&format!("Remove failed: {err:#}")),
+        }
+    });
+
+    (catalog, download, remove, progress, status)
+}
+
+fn selected_whisper_model(catalog: &gtk::DropDown) -> Option<String> {
+    whisper::PRESETS
+        .get(catalog.selected() as usize)
+        .map(|preset| preset.id.to_string())
+}
+
+fn whisper_status_text() -> String {
+    let installed = whisper::installed_models();
+    if installed.is_empty() {
+        "No local model downloaded yet. Downloads come from the official whisper.cpp repository and stay on this computer.".into()
+    } else {
+        let list: Vec<String> = installed
+            .iter()
+            .map(|(name, bytes)| format!("{name} ({})", vision::format_bytes(*bytes)))
+            .collect();
+        format!("Downloaded: {}", list.join(", "))
+    }
+}
+
 fn append_meeting_fields(page: &gtk::Box, meeting: &MeetingSettingsWidgets) {
     page.append(&field_row("Audio source", &meeting.audio_source));
     page.append(&field_row("Custom audio device", &meeting.audio_device));
@@ -1870,12 +2039,27 @@ fn append_meeting_fields(page: &gtk::Box, meeting: &MeetingSettingsWidgets) {
         "Silence gate (0 = disabled)",
         &meeting.silence_threshold,
     ));
+    page.append(&section_heading("Transcription"));
     page.append(&field_row(
-        "Transcription provider",
+        "Transcription backend",
+        &meeting.transcription_backend,
+    ));
+    page.append(&field_row("Local whisper model", &meeting.whisper_catalog));
+    let whisper_actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    whisper_actions.append(&meeting.whisper_download);
+    whisper_actions.append(&meeting.whisper_remove);
+    page.append(&whisper_actions);
+    page.append(&meeting.whisper_progress);
+    page.append(&meeting.whisper_status);
+    page.append(&note_label(
+        "Local transcription runs on the CPU. `base` keeps up with 2-second chunks on most machines; try `small` or the quantized large-v3-turbo if your CPU is fast. Remote transcription uploads every audio chunk to the selected provider.",
+    ));
+    page.append(&field_row(
+        "Remote transcription provider",
         &meeting.transcription_provider,
     ));
     page.append(&field_row(
-        "Transcription model",
+        "Remote transcription model",
         &meeting.transcription_model,
     ));
     page.append(&field_row("Spoken language", &meeting.input_language));

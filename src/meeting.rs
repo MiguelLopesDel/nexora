@@ -3,6 +3,7 @@
 
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
 use async_channel::Sender;
@@ -19,6 +20,7 @@ use crate::conversation::Role;
 use crate::providers::{ChatRequest, complete_chat};
 use crate::screenshot;
 use crate::vision;
+use crate::whisper;
 
 const SAMPLE_RATE: u32 = 16_000;
 const CHANNELS: u16 = 1;
@@ -35,8 +37,20 @@ pub enum SessionEvent {
     Finished(Option<PathBuf>),
 }
 
+/// Where audio chunks are transcribed. Local keeps audio on this computer.
+pub enum TranscriptionBackend {
+    Local { model_path: PathBuf },
+    Remote { provider: ProviderConfig },
+}
+
+/// The backend after session start-up (local models load once, up front).
+enum Transcription {
+    Local(Arc<whisper::Transcriber>),
+    Remote { provider: ProviderConfig },
+}
+
 pub struct SessionServices {
-    pub transcription_provider: ProviderConfig,
+    pub transcription: TranscriptionBackend,
     pub analysis_task: TaskConfig,
     pub analysis_provider: ProviderConfig,
     pub vision_settings: VisionConfig,
@@ -65,19 +79,37 @@ async fn run(
     running: &mut watch::Receiver<bool>,
 ) -> Result<()> {
     let SessionServices {
-        transcription_provider,
+        transcription,
         analysis_task,
         analysis_provider,
         vision_settings,
         vision_provider,
         profile,
     } = services;
-    if transcription_provider.kind != ProviderKind::Openai {
-        bail!("live transcription requires an OpenAI-compatible provider");
-    }
     if settings.chunk_seconds == 0 || settings.chunk_seconds > 60 {
         bail!("audio chunk duration must be between 1 and 60 seconds");
     }
+    let transcription = match transcription {
+        TranscriptionBackend::Local { model_path } => {
+            let _ = events
+                .send(SessionEvent::Status("loading local whisper model…".into()))
+                .await;
+            let model_path = model_path.clone();
+            let transcriber =
+                tokio::task::spawn_blocking(move || whisper::Transcriber::load(&model_path))
+                    .await
+                    .context("whisper loading task failed")??;
+            Transcription::Local(Arc::new(transcriber))
+        }
+        TranscriptionBackend::Remote { provider } => {
+            if provider.kind != ProviderKind::Openai {
+                bail!("remote transcription requires an OpenAI-compatible provider");
+            }
+            Transcription::Remote {
+                provider: provider.clone(),
+            }
+        }
+    };
 
     let devices = capture_devices(settings)?;
     let bytes_per_chunk = SAMPLE_RATE as usize
@@ -85,9 +117,13 @@ async fn run(
         * (BITS_PER_SAMPLE as usize / 8)
         * settings.chunk_seconds as usize;
     let audio = capture_audio(devices.clone(), bytes_per_chunk, running.clone());
+    let backend_label = match &transcription {
+        Transcription::Local(_) => format!("local whisper ({})", settings.whisper_model),
+        Transcription::Remote { .. } => "remote transcription API".to_string(),
+    };
     let transcriptions = transcribe_audio(
         audio,
-        transcription_provider.clone(),
+        transcription,
         settings.transcription_model.clone(),
         settings.input_language.clone(),
         settings.silence_threshold,
@@ -97,7 +133,7 @@ async fn run(
 
     let _ = events
         .send(SessionEvent::Status(format!(
-            "continuous transcription · {} · {}s audio windows",
+            "continuous transcription · {backend_label} · {} · {}s audio windows",
             devices.join(" + "),
             settings.chunk_seconds
         )))
@@ -303,7 +339,7 @@ async fn run(
 /// still producing suggestions for a previous window.
 fn transcribe_audio(
     audio: async_channel::Receiver<Result<Vec<u8>, String>>,
-    provider: ProviderConfig,
+    backend: Transcription,
     model: String,
     language: String,
     silence_threshold: u16,
@@ -330,7 +366,19 @@ fn transcribe_audio(
             if silence_threshold > 0 && pcm_level(&pcm) < silence_threshold {
                 continue;
             }
-            match transcribe(&provider, &model, &language, pcm_to_wav(&pcm)).await {
+            let transcribed = match &backend {
+                Transcription::Local(transcriber) => {
+                    let transcriber = Arc::clone(transcriber);
+                    let language = language.clone();
+                    tokio::task::spawn_blocking(move || transcriber.transcribe(&pcm, &language))
+                        .await
+                        .unwrap_or_else(|err| Err(anyhow::anyhow!("whisper task failed: {err}")))
+                }
+                Transcription::Remote { provider } => {
+                    transcribe(provider, &model, &language, pcm_to_wav(&pcm)).await
+                }
+            };
+            match transcribed {
                 Ok(text) if !text.trim().is_empty() => {
                     let text = text.trim().to_string();
                     let _ = events.send(SessionEvent::Transcript(text.clone())).await;

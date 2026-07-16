@@ -102,6 +102,13 @@ audio_device = ""       # Pulse source name for "custom"
 chunk_seconds = 2
 # Skip near-silent PCM chunks before upload. Set 0 to disable the local gate.
 silence_threshold = 180
+# "local" transcribes with whisper.cpp on this computer (default; audio never
+# leaves the machine). "remote" uploads each chunk to the provider below.
+transcription_backend = "local"
+# Curated whisper.cpp checkpoint for the local backend. Download it in
+# Settings → Live meeting: tiny, base, small, or large-v3-turbo-q5_0.
+whisper_model = "base"
+# Used only when transcription_backend = "remote".
 transcription_provider = "openai"
 transcription_model = "gpt-4o-mini-transcribe"
 input_language = ""     # blank = automatic detection
