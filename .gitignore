@@ -4,3 +4,18 @@
 # Local-only: opt-in mold linker (see CONTRIBUTING.md). Not committed so the
 # default build works for everyone without mold/clang installed.
 /.cargo/config.toml
+
+# Local materialization of the Safe Share prototype. The source of truth is
+# the prototype/safe-share-virtual-workspace branch; these copies exist only
+# so the prototype can be built from the main checkout.
+/src/bin/safe_share_prototype.rs
+/docs/safe-share-virtual-workspace-prototype.md
+
+# Local AI-assistant instructions and workspace metadata.
+/AGENTS.md
+/CLAUDE.md
+/CODEX.md
+/GEMINI.md
+/COPILOT.md
+/AI.md
+/.ai/

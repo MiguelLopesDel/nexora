@@ -2,9 +2,11 @@ mod app;
 mod config;
 mod conversation;
 mod hidden;
+mod meeting;
 mod providers;
 mod screenshot;
 mod ui;
+mod vision;
 
 use std::sync::OnceLock;
 

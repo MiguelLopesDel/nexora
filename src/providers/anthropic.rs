@@ -60,11 +60,18 @@ pub async fn stream(
     tx: &Sender<StreamEvent>,
 ) -> Result<()> {
     let url = format!("{}/v1/messages", provider.base_url());
+    let mut body = build_body(request);
+    if provider.thinking == Some(true) {
+        body["thinking"] = json!({ "type": "adaptive" });
+    }
+    if let Some(effort) = &provider.reasoning_effort {
+        body["output_config"] = json!({ "effort": effort });
+    }
     let response = http_client()?
         .post(url)
         .header("x-api-key", provider.resolve_api_key()?)
         .header("anthropic-version", "2023-06-01")
-        .json(&build_body(request))
+        .json(&body)
         .send()
         .await?;
     let response = check_status(response).await?;

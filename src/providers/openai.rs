@@ -59,10 +59,19 @@ pub async fn stream(
     tx: &Sender<StreamEvent>,
 ) -> Result<()> {
     let url = format!("{}/chat/completions", provider.base_url());
+    let mut body = build_body(request);
+    if let Some(thinking) = provider.thinking {
+        body["thinking"] = json!({
+            "type": if thinking { "enabled" } else { "disabled" }
+        });
+    }
+    if let Some(effort) = &provider.reasoning_effort {
+        body["reasoning_effort"] = json!(effort);
+    }
     let response = http_client()?
         .post(url)
         .bearer_auth(provider.resolve_api_key()?)
-        .json(&build_body(request))
+        .json(&body)
         .send()
         .await?;
     let response = check_status(response).await?;

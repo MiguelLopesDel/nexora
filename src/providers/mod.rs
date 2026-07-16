@@ -65,6 +65,52 @@ pub async fn stream_chat(provider: &ProviderConfig, request: ChatRequest, tx: Se
     let _ = tx.send(last).await;
 }
 
+/// Collect a streamed completion into one string for background meeting tasks.
+pub async fn complete_chat(provider: &ProviderConfig, request: ChatRequest) -> Result<String> {
+    let (tx, rx) = async_channel::unbounded();
+    stream_chat(provider, request, tx).await;
+    let mut answer = String::new();
+    while let Ok(event) = rx.recv().await {
+        match event {
+            StreamEvent::Delta(text) => answer.push_str(&text),
+            StreamEvent::Done => return Ok(answer),
+            StreamEvent::Error(message) => anyhow::bail!(message),
+        }
+    }
+    anyhow::bail!("provider stream ended without a completion event")
+}
+
+/// Query the provider's model catalog. OpenAI-compatible providers and
+/// Anthropic both expose a `data[].id` list at their models endpoint.
+pub async fn list_models(provider: &ProviderConfig) -> Result<Vec<String>> {
+    let url = match provider.kind {
+        ProviderKind::Anthropic => format!("{}/v1/models?limit=1000", provider.base_url()),
+        ProviderKind::Openai => format!("{}/models", provider.base_url()),
+    };
+    let client = http_client()?;
+    let request = match provider.kind {
+        ProviderKind::Anthropic => client
+            .get(url)
+            .header("x-api-key", provider.resolve_api_key()?)
+            .header("anthropic-version", "2023-06-01"),
+        ProviderKind::Openai => client.get(url).bearer_auth(provider.resolve_api_key()?),
+    };
+    let response = check_status(request.send().await?).await?;
+    let value: serde_json::Value = response.json().await?;
+    let mut models: Vec<String> = value["data"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|model| model["id"].as_str().map(ToOwned::to_owned))
+        .collect();
+    models.sort_by_key(|left| left.to_lowercase());
+    models.dedup();
+    if models.is_empty() {
+        anyhow::bail!("provider returned no models")
+    }
+    Ok(models)
+}
+
 fn http_client() -> Result<reqwest::Client> {
     Ok(reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(15))

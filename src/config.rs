@@ -19,6 +19,12 @@ pub struct Config {
     pub tasks: HashMap<String, TaskConfig>,
     #[serde(default)]
     pub presets: HashMap<String, PresetConfig>,
+    #[serde(default)]
+    pub meeting: MeetingConfig,
+    #[serde(default)]
+    pub vision: VisionConfig,
+    #[serde(default)]
+    pub profiles: HashMap<String, AssistantProfile>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -65,10 +71,10 @@ fn default_layer_shell() -> String {
     "auto".into()
 }
 fn default_width() -> i32 {
-    620
+    820
 }
 fn default_height() -> i32 {
-    440
+    560
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -82,6 +88,15 @@ pub struct ProviderConfig {
     pub api_key: Option<String>,
     /// Name of an environment variable holding the API key.
     pub api_key_env: Option<String>,
+    /// Model preselected when this provider becomes the default chat provider.
+    #[serde(default)]
+    pub default_model: Option<String>,
+    /// Provider-specific thinking mode; `None` keeps the provider default.
+    #[serde(default)]
+    pub thinking: Option<bool>,
+    /// Provider-specific reasoning effort such as "high" or "max".
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -89,6 +104,15 @@ pub struct ProviderConfig {
 pub enum ProviderKind {
     Anthropic,
     Openai,
+}
+
+impl ProviderKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Anthropic => "anthropic",
+            Self::Openai => "openai",
+        }
+    }
 }
 
 impl ProviderConfig {
@@ -146,6 +170,152 @@ fn default_task() -> String {
     "ask".into()
 }
 
+/// Continuous meeting assistant settings. All fields are exposed in Settings.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MeetingConfig {
+    /// "microphone", "system", "both", or "custom".
+    #[serde(default = "default_audio_source")]
+    pub audio_source: String,
+    /// PulseAudio/PipeWire source name when `audio_source = "custom"`.
+    #[serde(default)]
+    pub audio_device: String,
+    #[serde(default = "default_chunk_seconds")]
+    pub chunk_seconds: u64,
+    /// RMS-like PCM amplitude below which a chunk is skipped. Zero disables it.
+    #[serde(default = "default_silence_threshold")]
+    pub silence_threshold: u16,
+    #[serde(default = "default_transcription_provider")]
+    pub transcription_provider: String,
+    #[serde(default = "default_transcription_model")]
+    pub transcription_model: String,
+    #[serde(default)]
+    pub input_language: String,
+    #[serde(default)]
+    pub translate: bool,
+    #[serde(default = "default_target_language")]
+    pub target_language: String,
+    #[serde(default = "default_true")]
+    pub suggestions: bool,
+    #[serde(default = "default_true")]
+    pub objection_handling: bool,
+    #[serde(default = "default_true")]
+    pub automatic_notes: bool,
+    #[serde(default)]
+    pub screen_context: bool,
+    #[serde(default = "default_screen_interval")]
+    pub screen_interval_chunks: u32,
+    #[serde(default = "default_true")]
+    pub summary: bool,
+    #[serde(default = "default_true")]
+    pub save_session: bool,
+    #[serde(default = "default_task")]
+    pub analysis_task: String,
+    #[serde(default = "default_profile")]
+    pub profile: String,
+}
+
+impl Default for MeetingConfig {
+    fn default() -> Self {
+        Self {
+            audio_source: default_audio_source(),
+            audio_device: String::new(),
+            chunk_seconds: default_chunk_seconds(),
+            silence_threshold: default_silence_threshold(),
+            transcription_provider: default_transcription_provider(),
+            transcription_model: default_transcription_model(),
+            input_language: String::new(),
+            translate: false,
+            target_language: default_target_language(),
+            suggestions: true,
+            objection_handling: true,
+            automatic_notes: true,
+            screen_context: false,
+            screen_interval_chunks: default_screen_interval(),
+            summary: true,
+            save_session: true,
+            analysis_task: default_task(),
+            profile: default_profile(),
+        }
+    }
+}
+
+fn default_audio_source() -> String {
+    "system".into()
+}
+fn default_chunk_seconds() -> u64 {
+    2
+}
+fn default_silence_threshold() -> u16 {
+    180
+}
+fn default_transcription_provider() -> String {
+    "openai".into()
+}
+fn default_transcription_model() -> String {
+    "gpt-4o-mini-transcribe".into()
+}
+fn default_target_language() -> String {
+    "Portuguese (Brazil)".into()
+}
+fn default_screen_interval() -> u32 {
+    3
+}
+fn default_profile() -> String {
+    "general".into()
+}
+
+/// Screen-understanding configuration. `direct` sends the image to the task
+/// model; `proxy` first converts it to text with a separate vision model.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VisionConfig {
+    #[serde(default = "default_vision_mode")]
+    pub mode: String,
+    #[serde(default = "default_vision_provider")]
+    pub provider: String,
+    #[serde(default = "default_vision_model")]
+    pub model: String,
+    #[serde(default = "default_vision_prompt")]
+    pub prompt: String,
+    #[serde(default = "default_ollama_url")]
+    pub ollama_url: String,
+}
+
+impl Default for VisionConfig {
+    fn default() -> Self {
+        Self {
+            mode: default_vision_mode(),
+            provider: default_vision_provider(),
+            model: default_vision_model(),
+            prompt: default_vision_prompt(),
+            ollama_url: default_ollama_url(),
+        }
+    }
+}
+
+fn default_vision_mode() -> String {
+    "direct".into()
+}
+fn default_vision_provider() -> String {
+    "ollama".into()
+}
+fn default_vision_model() -> String {
+    "qwen3-vl:4b".into()
+}
+fn default_vision_prompt() -> String {
+    "Describe the visible screen for another AI. Extract important text with OCR, application names, errors, numbers, UI state, and conversation-relevant details. Be factual and compact; do not guess hidden content.".into()
+}
+fn default_ollama_url() -> String {
+    "http://localhost:11434".into()
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssistantProfile {
+    pub system: String,
+}
+
 pub fn config_dir() -> PathBuf {
     dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("~/.config"))
@@ -178,13 +348,19 @@ impl Config {
     /// Sorted provider names, falling back to the example's when none are
     /// configured yet.
     pub fn provider_names(&self) -> Vec<String> {
-        let mut names: Vec<String> = if self.providers.is_empty() {
-            Self::example().providers.keys().cloned().collect()
-        } else {
-            self.providers.keys().cloned().collect()
-        };
+        let mut names: Vec<String> = Self::example().providers.keys().cloned().collect();
+        names.extend(self.providers.keys().cloned());
         names.sort();
+        names.dedup();
         names
+    }
+
+    /// Provider lookup with bundled providers available before config creation.
+    pub fn provider(&self, name: &str) -> Option<ProviderConfig> {
+        self.providers
+            .get(name)
+            .cloned()
+            .or_else(|| Self::example().providers.remove(name))
     }
 
     /// Task lookup with a clear error listing what is configured.
@@ -206,6 +382,24 @@ impl Config {
                 task.provider
             )
         })
+    }
+
+    pub fn profile(&self, name: &str) -> Result<AssistantProfile> {
+        if let Some(profile) = self.profiles.get(name) {
+            return Ok(profile.clone());
+        }
+        Self::example()
+            .profiles
+            .remove(name)
+            .with_context(|| format!("assistant profile \"{name}\" is not configured"))
+    }
+
+    pub fn profile_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = Self::example().profiles.keys().cloned().collect();
+        names.extend(self.profiles.keys().cloned());
+        names.sort();
+        names.dedup();
+        names
     }
 
     /// Preset lookup; "explain-screen" has a built-in fallback.
@@ -234,12 +428,25 @@ impl Config {
 pub struct SettingsUpdate {
     pub hidden: bool,
     pub hyprland_rule: String,
+    pub layer_shell: String,
+    pub width: i32,
+    pub height: i32,
     /// Task being configured (usually "ask").
     pub task: String,
     pub provider: String,
+    pub provider_kind: ProviderKind,
+    pub provider_base_url: Option<String>,
+    pub provider_api_key_env: Option<String>,
+    pub provider_thinking: Option<bool>,
+    pub provider_reasoning_effort: Option<String>,
     pub model: String,
     /// When `Some` and non-empty, stored as the provider's literal api_key.
     pub api_key: Option<String>,
+    pub clear_api_key: bool,
+    pub meeting: MeetingConfig,
+    pub vision: VisionConfig,
+    pub profile_name: String,
+    pub profile_system: String,
 }
 
 /// Apply settings to config.toml without discarding comments or unrelated keys.
@@ -275,19 +482,81 @@ pub fn apply_settings(update: &SettingsUpdate) -> Result<()> {
 
     table(&mut doc, "general")["hidden"] = value(update.hidden);
     table(&mut doc, "general")["hyprland_rule"] = value(update.hyprland_rule.clone());
+    table(&mut doc, "general")["layer_shell"] = value(update.layer_shell.clone());
+    table(&mut doc, "general")["width"] = value(update.width as i64);
+    table(&mut doc, "general")["height"] = value(update.height as i64);
 
     let tasks = table(&mut doc, "tasks");
     let task = subtable(tasks, &update.task);
     task["provider"] = value(update.provider.clone());
     task["model"] = value(update.model.clone());
 
-    if let Some(key) = &update.api_key
+    let providers = table(&mut doc, "providers");
+    let provider = subtable(providers, &update.provider);
+    provider["kind"] = value(update.provider_kind.as_str());
+    provider["default_model"] = value(update.model.clone());
+    match &update.provider_base_url {
+        Some(url) if !url.is_empty() => provider["base_url"] = value(url.clone()),
+        _ => {
+            provider.remove("base_url");
+        }
+    }
+    match &update.provider_api_key_env {
+        Some(name) if !name.is_empty() => provider["api_key_env"] = value(name.clone()),
+        _ => {
+            provider.remove("api_key_env");
+        }
+    }
+    match update.provider_thinking {
+        Some(enabled) => provider["thinking"] = value(enabled),
+        None => {
+            provider.remove("thinking");
+        }
+    }
+    match &update.provider_reasoning_effort {
+        Some(effort) if !effort.is_empty() => provider["reasoning_effort"] = value(effort.clone()),
+        _ => {
+            provider.remove("reasoning_effort");
+        }
+    }
+    if update.clear_api_key {
+        provider.remove("api_key");
+    } else if let Some(key) = &update.api_key
         && !key.is_empty()
     {
-        let providers = table(&mut doc, "providers");
-        let provider = subtable(providers, &update.provider);
         provider["api_key"] = value(key.clone());
     }
+
+    let meeting = table(&mut doc, "meeting");
+    meeting["audio_source"] = value(update.meeting.audio_source.clone());
+    meeting["audio_device"] = value(update.meeting.audio_device.clone());
+    meeting["chunk_seconds"] = value(update.meeting.chunk_seconds as i64);
+    meeting["silence_threshold"] = value(update.meeting.silence_threshold as i64);
+    meeting["transcription_provider"] = value(update.meeting.transcription_provider.clone());
+    meeting["transcription_model"] = value(update.meeting.transcription_model.clone());
+    meeting["input_language"] = value(update.meeting.input_language.clone());
+    meeting["translate"] = value(update.meeting.translate);
+    meeting["target_language"] = value(update.meeting.target_language.clone());
+    meeting["suggestions"] = value(update.meeting.suggestions);
+    meeting["objection_handling"] = value(update.meeting.objection_handling);
+    meeting["automatic_notes"] = value(update.meeting.automatic_notes);
+    meeting["screen_context"] = value(update.meeting.screen_context);
+    meeting["screen_interval_chunks"] = value(update.meeting.screen_interval_chunks as i64);
+    meeting["summary"] = value(update.meeting.summary);
+    meeting["save_session"] = value(update.meeting.save_session);
+    meeting["analysis_task"] = value(update.meeting.analysis_task.clone());
+    meeting["profile"] = value(update.profile_name.clone());
+
+    let vision = table(&mut doc, "vision");
+    vision["mode"] = value(update.vision.mode.clone());
+    vision["provider"] = value(update.vision.provider.clone());
+    vision["model"] = value(update.vision.model.clone());
+    vision["prompt"] = value(update.vision.prompt.clone());
+    vision["ollama_url"] = value(update.vision.ollama_url.clone());
+
+    let profiles = table(&mut doc, "profiles");
+    let profile = subtable(profiles, &update.profile_name);
+    profile["system"] = value(update.profile_system.clone());
 
     std::fs::write(&path, doc.to_string())
         .with_context(|| format!("writing {}", path.display()))?;
@@ -325,6 +594,9 @@ mod tests {
         let config: Config = toml::from_str(EXAMPLE_CONFIG).expect("example config must parse");
         assert!(config.providers.contains_key("anthropic"));
         assert!(config.tasks.contains_key("ask"));
+        assert!(config.profiles.contains_key("sales"));
+        assert_eq!(config.meeting.audio_source, "system");
+        assert!(config.meeting.suggestions);
         let task = config.task("ask").unwrap();
         config.provider_for(task).unwrap();
     }
@@ -334,6 +606,9 @@ mod tests {
         let config: Config = toml::from_str("").unwrap();
         assert!(config.general.hidden);
         assert_eq!(config.general.layer_shell, "auto");
+        assert_eq!(config.meeting.chunk_seconds, 2);
+        assert_eq!(config.meeting.profile, "general");
+        assert_eq!(config.vision.model, "qwen3-vl:4b");
         assert!(config.preset("explain-screen").is_ok());
         assert!(config.preset("nope").is_err());
     }
@@ -345,6 +620,9 @@ mod tests {
             base_url: None,
             api_key: Some("sk-test".into()),
             api_key_env: Some("DEFINITELY_NOT_SET_12345".into()),
+            default_model: None,
+            thinking: None,
+            reasoning_effort: None,
         };
         assert_eq!(provider.resolve_api_key().unwrap(), "sk-test");
     }
@@ -361,21 +639,38 @@ mod tests {
         let update = SettingsUpdate {
             hidden: false,
             hyprland_rule: "noscreencopy".into(),
+            layer_shell: "auto".into(),
+            width: 700,
+            height: 500,
             task: "ask".into(),
             provider: "openrouter".into(),
+            provider_kind: ProviderKind::Openai,
+            provider_base_url: Some("https://openrouter.ai/api/v1".into()),
+            provider_api_key_env: Some("OPENROUTER_API_KEY".into()),
+            provider_thinking: Some(true),
+            provider_reasoning_effort: Some("high".into()),
             model: "some/model".into(),
             api_key: Some("sk-secret".into()),
+            clear_api_key: false,
+            meeting: MeetingConfig::default(),
+            vision: VisionConfig::default(),
+            profile_name: "general".into(),
+            profile_system: "Be concise.".into(),
         };
         apply_settings(&update).unwrap();
 
         let config = Config::load().unwrap();
         assert!(!config.general.hidden);
+        assert_eq!(config.general.width, 700);
         let task = config.task("ask").unwrap();
         assert_eq!(task.provider, "openrouter");
         assert_eq!(task.model, "some/model");
         // The provider (seeded from the example) now carries the literal key.
         let provider = config.provider_for(task).unwrap();
         assert_eq!(provider.resolve_api_key().unwrap(), "sk-secret");
+        assert_eq!(provider.thinking, Some(true));
+        assert_eq!(provider.reasoning_effort.as_deref(), Some("high"));
+        assert_eq!(config.vision.provider, "ollama");
 
         let _ = std::fs::remove_dir_all(&dir);
         unsafe {
@@ -390,6 +685,9 @@ mod tests {
             base_url: Some("http://localhost:11434/v1/".into()),
             api_key: Some("x".into()),
             api_key_env: None,
+            default_model: None,
+            thinking: None,
+            reasoning_effort: None,
         };
         assert_eq!(provider.base_url(), "http://localhost:11434/v1");
     }

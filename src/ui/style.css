@@ -45,6 +45,26 @@ window.nexora {
     color: #8b93a7;
 }
 
+.token-notice {
+    border-radius: 9px;
+    padding: 8px 10px;
+}
+
+.token-notice.token-low {
+    background-color: rgba(70, 160, 90, 0.16);
+    color: #9bd9a8;
+}
+
+.token-notice.token-medium {
+    background-color: rgba(210, 155, 65, 0.16);
+    color: #e7c581;
+}
+
+.token-notice.token-high {
+    background-color: rgba(205, 85, 70, 0.18);
+    color: #efa094;
+}
+
 entry.nexora-entry {
     background-color: rgba(255, 255, 255, 0.06);
     border: 1px solid rgba(255, 255, 255, 0.10);
@@ -74,3 +94,63 @@ button.nexora-attach:checked {
     color: #b7c4ff;
     border-color: rgba(140, 160, 255, 0.55);
 }
+
+.nexora-sidebar {
+    background-color: rgba(255, 255, 255, 0.025);
+    border-radius: 10px;
+    padding: 4px;
+}
+
+.nexora-sidebar row {
+    border-radius: 8px;
+    padding: 7px 10px;
+}
+
+.nexora-sidebar row:selected {
+    background-color: rgba(140, 160, 255, 0.18);
+    color: #d7ddff;
+}
+
+.provider-grid flowboxchild {
+    border-radius: 12px;
+    padding: 0;
+}
+
+.provider-grid flowboxchild:selected {
+    background-color: transparent;
+}
+
+.provider-card {
+    background-color: rgba(255, 255, 255, 0.045);
+    border: 1px solid rgba(255, 255, 255, 0.09);
+    border-radius: 12px;
+    padding: 10px;
+    min-width: 132px;
+}
+
+.provider-grid flowboxchild:selected .provider-card {
+    background-color: rgba(140, 160, 255, 0.17);
+    border-color: rgba(140, 160, 255, 0.58);
+}
+
+.provider-figure {
+    min-width: 30px;
+    min-height: 30px;
+    border-radius: 9px;
+    font-size: 16px;
+    font-weight: 800;
+    background-color: rgba(140, 160, 255, 0.22);
+    color: #d7ddff;
+}
+
+.provider-name {
+    font-weight: 650;
+    color: #e6e6ec;
+}
+
+.provider-openai { background-color: rgba(72, 160, 130, 0.30); color: #91dfc2; }
+.provider-anthropic { background-color: rgba(210, 130, 90, 0.28); color: #f0b28e; }
+.provider-openrouter { background-color: rgba(145, 110, 220, 0.28); color: #c9adff; }
+.provider-deepseek { background-color: rgba(70, 120, 220, 0.30); color: #9dbbff; }
+.provider-gemini { background-color: rgba(80, 145, 220, 0.28); color: #a8cbff; }
+.provider-ollama { background-color: rgba(150, 150, 160, 0.24); color: #d5d5dc; }

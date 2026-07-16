@@ -6,13 +6,13 @@
 # Ask the compositor to hide Nexora from screen capture (Hyprland/niri only, see README).
 hidden = true
 # Hyprland window-rule keyword for anti-capture. The token varies by Hyprland
-# version/fork ("noscreencopy", "noscreenshare", …). Run `nexora hidden status`
+# version/fork ("no_screen_share", "noscreenshare", …). Run `nexora hidden status`
 # and check your Hyprland docs if hiding doesn't take effect.
-hyprland_rule = "noscreencopy"
+hyprland_rule = "no_screen_share"
 # Overlay via layer-shell: "auto" (use when supported), "on", "off" (plain window).
 layer_shell = "auto"
-width = 620
-height = 440
+width = 820
+height = 560
 
 # ------------------------------------------------------------------
 # Providers — "kind" selects the wire protocol:
@@ -24,30 +24,43 @@ height = 440
 [providers.anthropic]
 kind = "anthropic"
 api_key_env = "ANTHROPIC_API_KEY"
+default_model = "claude-sonnet-4-6"
 
 [providers.openai]
 kind = "openai"
 api_key_env = "OPENAI_API_KEY"
+default_model = "gpt-5-mini"
+# Optional on supported models. Higher levels can consume more billed output
+# tokens and add latency. Use "none" to disable reasoning where supported.
+# reasoning_effort = "low" # none, low, medium, high, xhigh, max
 
 [providers.openrouter]
 kind = "openai"
 base_url = "https://openrouter.ai/api/v1"
 api_key_env = "OPENROUTER_API_KEY"
+default_model = "~openai/gpt-latest"
 
 [providers.deepseek]
 kind = "openai"
 base_url = "https://api.deepseek.com/v1"
 api_key_env = "DEEPSEEK_API_KEY"
+default_model = "deepseek-v4-flash"
+thinking = true
+# DeepSeek V4 supports only "high" and "max". It maps low/medium to high.
+# Thinking tokens are part of billed output usage.
+reasoning_effort = "high"
 
 [providers.gemini]
 kind = "openai"
 base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
 api_key_env = "GEMINI_API_KEY"
+default_model = "gemini-3.5-flash"
 
 [providers.ollama]
 kind = "openai"
 base_url = "http://localhost:11434/v1"
 api_key = "ollama" # Ollama ignores the key but the field must be set
+default_model = "llama3.2"
 
 # ------------------------------------------------------------------
 # Tasks — pick a provider+model per job. "ask" is the default task.
@@ -55,12 +68,12 @@ api_key = "ollama" # Ollama ignores the key but the field must be set
 
 [tasks.ask]
 provider = "anthropic"
-model = "claude-sonnet-5"
+model = "claude-sonnet-4-6"
 system = "You are Nexora, a concise on-screen assistant. Answer briefly and directly."
 
 [tasks.explain-screen]
 provider = "anthropic"
-model = "claude-sonnet-5"
+model = "claude-sonnet-4-6"
 max_tokens = 1024
 
 # ------------------------------------------------------------------
@@ -77,3 +90,61 @@ task = "explain-screen"
 prompt = "Translate the text on my screen to Brazilian Portuguese. Only output the translation."
 attach_screen = true
 task = "explain-screen"
+
+# ------------------------------------------------------------------
+# Live meeting assistant — every option is also available under ⚙.
+# `parec` is used for lightweight PulseAudio/PipeWire-compatible capture.
+# ------------------------------------------------------------------
+
+[meeting]
+audio_source = "system" # "system", "microphone", "both", or "custom"
+audio_device = ""       # Pulse source name for "custom"
+chunk_seconds = 2
+# Skip near-silent PCM chunks before upload. Set 0 to disable the local gate.
+silence_threshold = 180
+transcription_provider = "openai"
+transcription_model = "gpt-4o-mini-transcribe"
+input_language = ""     # blank = automatic detection
+translate = false
+target_language = "Portuguese (Brazil)"
+suggestions = true
+objection_handling = true
+automatic_notes = true
+screen_context = false
+screen_interval_chunks = 3
+summary = true
+save_session = true
+analysis_task = "ask"
+profile = "general"
+
+# ------------------------------------------------------------------
+# Screen understanding — "direct" sends screenshots to the analysis
+# model. "proxy" first asks a separate vision/OCR model for a compact
+# textual description, which lets text-only models such as DeepSeek use it.
+# Local downloads in the UI use Ollama's model registry.
+# ------------------------------------------------------------------
+
+[vision]
+mode = "direct" # "direct", "proxy", or "off"
+provider = "ollama"
+model = "qwen3-vl:4b"
+ollama_url = "http://localhost:11434"
+prompt = "Describe the visible screen for another AI. Extract important text with OCR, application names, errors, numbers, UI state, and conversation-relevant details. Be factual and compact; do not guess hidden content."
+
+[profiles.general]
+system = "You are a discreet live meeting coach. Be concise, practical, truthful, and never invent facts."
+
+[profiles.interview]
+system = "Coach the user during an interview. Suggest concise STAR-style answers and useful clarifying questions."
+
+[profiles.sales]
+system = "Coach a consultative sales call. Identify needs, suggest value-based replies, and handle objections without pressure."
+
+[profiles.study]
+system = "Act as a study coach. Clarify concepts, flag uncertainty, and produce useful notes."
+
+[profiles.presentation]
+system = "Coach a live presentation. Suggest crisp explanations, transitions, and responses to audience questions."
+
+[profiles.programming]
+system = "Act as a programming copilot. Focus on accurate technical explanations, debugging steps, and concise code guidance."
