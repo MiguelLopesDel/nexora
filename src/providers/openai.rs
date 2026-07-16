@@ -60,14 +60,7 @@ pub async fn stream(
 ) -> Result<()> {
     let url = format!("{}/chat/completions", provider.base_url());
     let mut body = build_body(request);
-    if let Some(thinking) = provider.thinking {
-        body["thinking"] = json!({
-            "type": if thinking { "enabled" } else { "disabled" }
-        });
-    }
-    if let Some(effort) = &provider.reasoning_effort {
-        body["reasoning_effort"] = json!(effort);
-    }
+    apply_reasoning_options(provider, &mut body);
     let response = http_client()?
         .post(url)
         .bearer_auth(provider.resolve_api_key()?)
@@ -90,6 +83,21 @@ pub async fn stream(
         Ok(())
     })
     .await
+}
+
+fn apply_reasoning_options(provider: &ProviderConfig, body: &mut Value) {
+    if let Some(thinking) = provider.thinking {
+        body["thinking"] = json!({
+            "type": if thinking { "enabled" } else { "disabled" }
+        });
+    }
+    // An effort level is meaningless when thinking is explicitly disabled,
+    // and some OpenAI-compatible providers reject the contradictory pair.
+    if provider.thinking != Some(false)
+        && let Some(effort) = &provider.reasoning_effort
+    {
+        body["reasoning_effort"] = json!(effort);
+    }
 }
 
 #[cfg(test)]
@@ -151,5 +159,40 @@ mod tests {
         assert_eq!(messages[1]["role"], "user");
         assert_eq!(messages[2]["role"], "assistant");
         assert_eq!(messages[3]["content"], "c");
+    }
+
+    #[test]
+    fn meeting_transcript_context_reaches_request_body() {
+        let contextual_prompt = "sobre o que eles tao conversando?\n\nLive meeting transcript (most recent speech, for context):\nQual que é a pessoa?";
+        let request = ChatRequest {
+            model: "gpt-test".into(),
+            system: None,
+            messages: vec![(Role::User, contextual_prompt.into())],
+            image_png: None,
+            max_tokens: 32,
+        };
+
+        let body = build_body(&request);
+
+        assert_eq!(body["messages"][0]["content"], contextual_prompt);
+    }
+
+    #[test]
+    fn disabled_thinking_omits_stale_reasoning_effort() {
+        let provider = ProviderConfig {
+            kind: crate::config::ProviderKind::Openai,
+            base_url: None,
+            api_key: None,
+            api_key_env: None,
+            default_model: None,
+            thinking: Some(false),
+            reasoning_effort: Some("high".into()),
+        };
+        let mut body = json!({});
+
+        apply_reasoning_options(&provider, &mut body);
+
+        assert_eq!(body["thinking"]["type"], "disabled");
+        assert!(body.get("reasoning_effort").is_none());
     }
 }

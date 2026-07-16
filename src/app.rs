@@ -83,6 +83,13 @@ fn handle_command(app: &gtk::Application, args: &[&str]) -> u8 {
                 }
             }
         }
+        ["ask", prompt] => {
+            let overlay = overlay(app);
+            overlay.present();
+            overlay.ask((*prompt).to_string(), false, "ask".to_string());
+        }
+        ["session", "start"] => overlay(app).start_session(),
+        ["session", "stop"] => overlay(app).stop_session(),
         other => {
             eprintln!("nexora: unknown command {other:?}");
             return 2;

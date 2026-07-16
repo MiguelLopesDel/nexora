@@ -100,6 +100,15 @@ task = "explain-screen"
 audio_source = "system" # "system", "microphone", "both", or "custom"
 audio_device = ""       # Pulse source name for "custom"
 chunk_seconds = 2
+# Local Whisper analyzes a rolling 4-second window every 2 seconds. The overlap
+# preserves words split at capture boundaries without delaying every update 4s.
+transcription_window_seconds = 4
+# Wait briefly for speech still being transcribed before a manual question is
+# sent. Set 0 for the lowest latency; increase for more complete live context.
+question_context_wait_ms = 1200
+# Character budget sent with manual questions. Nexora keeps the full local
+# transcript and fills this budget with recent + question-relevant older speech.
+question_context_chars = 12000
 # Skip near-silent PCM chunks before upload. Set 0 to disable the local gate.
 silence_threshold = 180
 # "local" transcribes with whisper.cpp on this computer (default; audio never
@@ -108,6 +117,9 @@ transcription_backend = "local"
 # Curated whisper.cpp checkpoint for the local backend. Download it in
 # Settings → Live meeting: tiny, base, small, or large-v3-turbo-q5_0.
 whisper_model = "base"
+# "auto" prefers GPU when this Nexora build includes a GPU backend; "gpu"
+# refuses to start without one; "cpu" always disables GPU acceleration.
+transcription_compute = "auto"
 # Used only when transcription_backend = "remote".
 transcription_provider = "openai"
 transcription_model = "gpt-4o-mini-transcribe"

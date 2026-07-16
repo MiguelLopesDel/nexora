@@ -9,6 +9,15 @@ readme = "README.md"
 keywords = ["ai", "assistant", "wayland", "overlay", "gtk4"]
 categories = ["gui"]
 
+[features]
+default = ["whisper-vulkan"]
+# whisper.cpp GPU backends are selected at build time. Distributions should
+# ship one GPU-enabled variant. Vulkan is the broad Linux default; a portable
+# CPU-only build remains available with `--no-default-features`.
+whisper-vulkan = ["whisper-rs/vulkan"]
+whisper-cuda = ["whisper-rs/cuda"]
+whisper-rocm = ["whisper-rs/hipblas"]
+
 [dependencies]
 anyhow = "1.0.103"
 ashpd = { version = "0.13.12", default-features = false, features = ["documents", "screenshot", "tokio"] }

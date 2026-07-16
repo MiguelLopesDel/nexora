@@ -2,8 +2,9 @@
 //! panel, switched by a header toggle.
 
 use std::cell::{Cell, RefCell};
+use std::collections::{BTreeSet, HashSet};
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gtk4 as gtk;
 use gtk4::gdk;
@@ -58,8 +59,12 @@ struct MeetingSettingsWidgets {
     audio_source: gtk::DropDown,
     audio_device: gtk::Entry,
     chunk_seconds: gtk::SpinButton,
+    transcription_window_seconds: gtk::SpinButton,
+    question_context_wait_ms: gtk::SpinButton,
+    question_context_chars: gtk::SpinButton,
     silence_threshold: gtk::SpinButton,
     transcription_backend: gtk::DropDown,
+    transcription_compute: gtk::DropDown,
     whisper_catalog: gtk::DropDown,
     whisper_download: gtk::Button,
     whisper_remove: gtk::Button,
@@ -105,6 +110,7 @@ pub struct Overlay {
     badge: gtk::Label,
     stack: gtk::Stack,
     gear: gtk::ToggleButton,
+    live_button: gtk::ToggleButton,
     // Chat view.
     entry: gtk::Entry,
     attach: gtk::ToggleButton,
@@ -112,15 +118,180 @@ pub struct Overlay {
     meeting_button: gtk::ToggleButton,
     response: gtk::TextView,
     end_mark: gtk::TextMark,
+    live_response: gtk::TextView,
+    live_end_mark: gtk::TextMark,
     status: gtk::Label,
+    live_status: gtk::Label,
     conversation: RefCell<Conversation>,
     busy: Cell<bool>,
     meeting_stop: RefCell<Option<tokio::sync::watch::Sender<bool>>>,
-    // Live transcript of the active meeting, so a typed question can use it
-    // as context. Cleared when a session starts.
+    // Rolling transcript of the current or most recent meeting, so typed
+    // questions can use it as context. A new session replaces it; a new chat
+    // clears it after the session has finished.
     meeting_transcript: RefCell<Vec<String>>,
     // Settings view.
     settings: RefCell<Option<SettingsWidgets>>,
+}
+
+fn append_meeting_transcript_context(
+    messages: &mut [(Role, String)],
+    transcript: &[String],
+    max_chars: usize,
+) {
+    let Some((_, text)) = messages.last_mut() else {
+        return;
+    };
+    let question = text.clone();
+    if let Some(context) = meeting_transcript_context(&question, transcript, max_chars) {
+        text.push_str(
+            "\n\nLive session context selected from the transcript. Treat transcription as potentially imperfect and ground the answer only in this evidence:\n",
+        );
+        text.push_str(&context);
+    }
+}
+
+fn meeting_transcript_context(
+    question: &str,
+    transcript: &[String],
+    max_chars: usize,
+) -> Option<String> {
+    if transcript.is_empty() || max_chars < 200 {
+        return None;
+    }
+
+    let label_budget = 80;
+    let content_budget = max_chars.saturating_sub(label_budget);
+    let recent_budget = content_budget * 3 / 5;
+    let relevant_budget = content_budget.saturating_sub(recent_budget);
+
+    let mut recent_start = transcript.len();
+    let mut recent_chars = 0;
+    while recent_start > 0 {
+        let next = transcript[recent_start - 1].chars().count() + 1;
+        if recent_chars + next > recent_budget && recent_start < transcript.len() {
+            break;
+        }
+        recent_start -= 1;
+        recent_chars += next;
+    }
+
+    let query_terms = meaningful_terms(question);
+    let mut scored: Vec<(usize, usize)> = transcript[..recent_start]
+        .iter()
+        .enumerate()
+        .filter_map(|(index, chunk)| {
+            let chunk_terms = meaningful_terms(chunk);
+            let score = query_terms
+                .iter()
+                .filter(|term| chunk_terms.contains(*term))
+                .map(|term| 1 + term.chars().count().min(12) / 4)
+                .sum();
+            (score > 0).then_some((score, index))
+        })
+        .collect();
+    scored.sort_unstable_by(|(left_score, left_index), (right_score, right_index)| {
+        right_score
+            .cmp(left_score)
+            .then_with(|| right_index.cmp(left_index))
+    });
+
+    let mut relevant_indices = BTreeSet::new();
+    let mut relevant_chars = 0;
+    for (_, anchor) in scored {
+        let neighbors = [
+            Some(anchor),
+            anchor.checked_sub(1),
+            (anchor + 1 < recent_start).then_some(anchor + 1),
+        ];
+        for index in neighbors.into_iter().flatten() {
+            let size = transcript[index].chars().count() + 1;
+            if relevant_chars + size <= relevant_budget && relevant_indices.insert(index) {
+                relevant_chars += size;
+            }
+        }
+        if relevant_chars >= relevant_budget {
+            break;
+        }
+    }
+
+    let mut context = String::new();
+    if !relevant_indices.is_empty() {
+        context.push_str("Most relevant earlier speech:\n");
+        for index in relevant_indices {
+            context.push_str(&transcript[index]);
+            context.push('\n');
+        }
+    }
+    context.push_str("Most recent speech:\n");
+    let recent = transcript[recent_start..].join("\n");
+    context.push_str(&tail_chars(&recent, recent_budget));
+    Some(context)
+}
+
+fn meaningful_terms(text: &str) -> HashSet<String> {
+    const STOPWORDS: &[&str] = &[
+        "a", "as", "ao", "com", "da", "das", "de", "do", "dos", "e", "em", "era", "foi", "o", "os",
+        "para", "pela", "pelo", "por", "qual", "que", "quem", "the", "what", "when", "where",
+        "which", "who", "why",
+    ];
+    let mut terms = HashSet::new();
+    let mut current = String::new();
+    for character in text.chars().chain(std::iter::once(' ')) {
+        if character.is_alphanumeric() {
+            current.extend(character.to_lowercase());
+        } else if !current.is_empty() {
+            if current.chars().count() >= 3 && !STOPWORDS.contains(&current.as_str()) {
+                terms.insert(std::mem::take(&mut current));
+            } else {
+                current.clear();
+            }
+        }
+    }
+    terms
+}
+
+fn tail_chars(text: &str, max_chars: usize) -> String {
+    let count = text.chars().count();
+    text.chars().skip(count.saturating_sub(max_chars)).collect()
+}
+
+fn can_send_manual_question(meeting_active: bool, transcript: &[String]) -> bool {
+    !meeting_active || !transcript.is_empty()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MeetingEventSurface {
+    Status,
+    Live,
+}
+
+fn meeting_event_surface(event: &SessionEvent) -> MeetingEventSurface {
+    match event {
+        SessionEvent::Status(_) | SessionEvent::Finished(_) => MeetingEventSurface::Status,
+        SessionEvent::Transcript(_)
+        | SessionEvent::Translation(_)
+        | SessionEvent::Insight(_)
+        | SessionEvent::Summary(_)
+        | SessionEvent::Error(_) => MeetingEventSurface::Live,
+    }
+}
+
+fn visible_coaching_text(text: &str) -> Option<&str> {
+    let text = text.trim();
+    let normalized = text
+        .trim_matches(|character| matches!(character, '*' | '_'))
+        .trim();
+    (!normalized.eq_ignore_ascii_case("wait for more context.")
+        && !normalized.eq_ignore_ascii_case("wait for more context"))
+    .then_some(text)
+}
+
+fn should_wait_for_fresh_transcript(
+    meeting_active: bool,
+    transcript_len_at_submit: usize,
+    current_transcript_len: usize,
+) -> bool {
+    meeting_active && current_transcript_len <= transcript_len_at_submit
 }
 
 impl Overlay {
@@ -156,8 +327,14 @@ impl Overlay {
             .tooltip_text("Settings")
             .build();
         gear.add_css_class("nexora-attach");
+        let live_button = gtk::ToggleButton::builder()
+            .label("Live")
+            .tooltip_text("Open live transcript, translation, and coaching")
+            .build();
+        live_button.add_css_class("nexora-attach");
         header.append(&title);
         header.append(&badge);
+        header.append(&live_button);
         header.append(&gear);
         root.append(&header);
 
@@ -213,11 +390,44 @@ impl Overlay {
         chat_page.append(&status);
         chat_page.append(&input_row);
 
+        // Live session output is deliberately separate from manual chat. It
+        // can be inspected on demand without turning transcript fragments or
+        // coaching suggestions into conversation turns.
+        let live_response = gtk::TextView::builder()
+            .editable(false)
+            .cursor_visible(false)
+            .wrap_mode(gtk::WrapMode::WordChar)
+            .build();
+        live_response.add_css_class("nexora-response");
+        install_tags(&live_response);
+        let live_end_mark =
+            live_response
+                .buffer()
+                .create_mark(None, &live_response.buffer().end_iter(), false);
+        let live_scroll = gtk::ScrolledWindow::builder()
+            .child(&live_response)
+            .vexpand(true)
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .build();
+        let live_hint = gtk::Label::new(Some(
+            "Live activity is context for the assistant, not part of your chat history.",
+        ));
+        live_hint.add_css_class("nexora-status");
+        live_hint.set_xalign(0.0);
+        let live_status = gtk::Label::new(None);
+        live_status.add_css_class("nexora-status");
+        live_status.set_xalign(0.0);
+        let live_page = gtk::Box::new(gtk::Orientation::Vertical, 8);
+        live_page.append(&live_scroll);
+        live_page.append(&live_status);
+        live_page.append(&live_hint);
+
         let stack = gtk::Stack::builder()
             .vexpand(true)
             .transition_type(gtk::StackTransitionType::Crossfade)
             .build();
         stack.add_named(&chat_page, Some("chat"));
+        stack.add_named(&live_page, Some("live"));
         root.append(&stack);
 
         window.set_child(Some(&root));
@@ -236,13 +446,17 @@ impl Overlay {
             badge,
             stack,
             gear,
+            live_button,
             entry,
             attach,
             explain,
             meeting_button,
             response,
             end_mark,
+            live_response,
+            live_end_mark,
             status,
+            live_status,
             conversation: RefCell::new(conversation),
             busy: Cell::new(false),
             meeting_stop: RefCell::new(None),
@@ -285,8 +499,21 @@ impl Overlay {
         let this = Rc::clone(self);
         self.gear.connect_toggled(move |gear| {
             if gear.is_active() {
+                this.live_button.set_active(false);
                 this.open_settings();
             } else {
+                this.stack.set_visible_child_name("chat");
+                this.entry.grab_focus();
+            }
+        });
+
+        let this = Rc::clone(self);
+        self.live_button.connect_toggled(move |button| {
+            if button.is_active() {
+                this.gear.set_active(false);
+                button.set_label("Live");
+                this.stack.set_visible_child_name("live");
+            } else if this.stack.visible_child_name().as_deref() == Some("live") {
                 this.stack.set_visible_child_name("chat");
                 this.entry.grab_focus();
             }
@@ -336,6 +563,11 @@ impl Overlay {
     }
 
     fn new_conversation(&self) {
+        // Keep the active session attached to a fresh chat, but do not leak a
+        // finished session's transcript into an unrelated conversation.
+        if self.meeting_stop.borrow().is_none() {
+            self.meeting_transcript.borrow_mut().clear();
+        }
         *self.conversation.borrow_mut() = Conversation::new();
         self.render_conversation();
         self.set_status("new conversation");
@@ -353,7 +585,11 @@ impl Overlay {
             let transcription = if settings.transcription_backend == "local" {
                 let model_path = crate::whisper::model_path(&settings.whisper_model);
                 if model_path.exists() {
-                    Ok(meeting::TranscriptionBackend::Local { model_path })
+                    crate::whisper::ComputePreference::from_config(&settings.transcription_compute)
+                        .map(|compute| meeting::TranscriptionBackend::Local {
+                            model_path,
+                            compute,
+                        })
                 } else {
                     Err(anyhow::anyhow!(
                         "local whisper model `{}` is not downloaded — open Settings → Live meeting to download it, or switch transcription to remote",
@@ -432,7 +668,8 @@ impl Overlay {
         }
         self.stack.set_visible_child_name("chat");
         self.gear.set_active(false);
-        self.show_meeting_line("Session", "Live assistant started", "meeting");
+        self.live_response.buffer().set_text("");
+        self.show_live_line("Session", "Live assistant started", "meeting");
 
         self.meeting_transcript.borrow_mut().clear();
         let (events_tx, events_rx) = async_channel::unbounded();
@@ -471,36 +708,62 @@ impl Overlay {
         }
     }
 
+    pub fn start_session(&self) {
+        if self.meeting_stop.borrow().is_none() {
+            self.meeting_button.set_active(true);
+        }
+    }
+
+    pub fn stop_session(&self) {
+        if self.meeting_stop.borrow().is_some() {
+            self.meeting_button.set_active(false);
+        }
+    }
+
     fn handle_meeting_event(&self, event: SessionEvent) {
+        if meeting_event_surface(&event) == MeetingEventSurface::Status {
+            match event {
+                SessionEvent::Status(text) => self.set_status(&text),
+                SessionEvent::Finished(path) => {
+                    self.meeting_stop.borrow_mut().take();
+                    self.meeting_button.set_active(false);
+                    match path {
+                        Some(path) => {
+                            self.set_status(&format!("session saved to {}", path.display()))
+                        }
+                        None => self.set_status("meeting finished"),
+                    }
+                }
+                _ => unreachable!("status surface only contains status lifecycle events"),
+            }
+            return;
+        }
+
         match event {
-            SessionEvent::Status(text) => self.set_status(&text),
             SessionEvent::Transcript(text) => {
                 // Keep a bounded rolling transcript so a typed question can use
                 // it as context without growing without bound.
                 let mut transcript = self.meeting_transcript.borrow_mut();
                 transcript.push(text.clone());
-                if transcript.len() > 400 {
-                    let overflow = transcript.len() - 400;
-                    transcript.drain(..overflow);
-                }
                 drop(transcript);
-                self.show_meeting_line("Transcript", &text, "meeting")
+                self.show_live_line("Transcript", &text, "meeting")
             }
             SessionEvent::Translation(text) => {
-                self.show_meeting_line("Translation", &text, "translation")
+                self.show_live_line("Translation", &text, "translation")
             }
-            SessionEvent::Insight(text) => self.show_meeting_line("Live coach", &text, "insight"),
-            SessionEvent::Summary(text) => {
-                self.show_meeting_line("Session summary", &text, "summary")
-            }
-            SessionEvent::Error(text) => self.show_system_line(&format!("meeting: {text}")),
-            SessionEvent::Finished(path) => {
-                self.meeting_stop.borrow_mut().take();
-                self.meeting_button.set_active(false);
-                match path {
-                    Some(path) => self.set_status(&format!("session saved to {}", path.display())),
-                    None => self.set_status("meeting finished"),
+            SessionEvent::Insight(text) => {
+                if let Some(text) = visible_coaching_text(&text) {
+                    self.show_live_line("Live coach", text, "insight");
+                } else {
+                    self.set_status("listening for enough context…");
                 }
+            }
+            SessionEvent::Summary(text) => self.show_live_line("Session summary", &text, "summary"),
+            SessionEvent::Error(text) => {
+                self.show_live_line("Session issue", &text, "dim");
+            }
+            SessionEvent::Status(_) | SessionEvent::Finished(_) => {
+                unreachable!("lifecycle events returned above")
             }
         }
     }
@@ -512,6 +775,7 @@ impl Overlay {
             return;
         }
         self.busy.set(true);
+        self.live_button.set_active(false);
         self.stack.set_visible_child_name("chat");
         self.gear.set_active(false);
 
@@ -523,6 +787,7 @@ impl Overlay {
     }
 
     async fn run_ask(self: &Rc<Self>, prompt: String, attach_screen: bool, task_name: String) {
+        let transcript_len_at_submit = self.meeting_transcript.borrow().len();
         // Capture first so a failure doesn't leave a half-formed turn.
         let image = if attach_screen {
             self.set_status("capturing screen…");
@@ -602,6 +867,20 @@ impl Overlay {
             }
         }
 
+        self.wait_for_fresh_meeting_transcript(transcript_len_at_submit)
+            .await;
+        if !can_send_manual_question(
+            self.meeting_stop.borrow().is_some(),
+            &self.meeting_transcript.borrow(),
+        ) {
+            self.entry.set_text(&prompt);
+            self.set_status("question not sent · live transcript is still unavailable");
+            self.show_system_line(
+                "No speech was transcribed in time, so Nexora did not send a context-free request or consume model tokens. Check the audio source, choose a faster Whisper model, or try again when a Transcript line appears.",
+            );
+            return;
+        }
+
         self.conversation
             .borrow_mut()
             .push_user(prompt, image.is_some());
@@ -610,15 +889,17 @@ impl Overlay {
         self.set_status(&format!("{} · {}", task.provider, task.model));
 
         let mut messages = self.conversation.borrow().api_messages();
-        // When a meeting is live, let a typed question use what is being said
-        // as context so the model understands the ongoing conversation.
-        if self.meeting_stop.borrow().is_some()
-            && let Some(context) = self.recent_meeting_transcript(6_000)
-            && let Some((_, text)) = messages.last_mut()
-        {
-            text.push_str("\n\nLive meeting transcript (most recent speech, for context):\n");
-            text.push_str(&context);
-        }
+        let context_chars = self
+            .config
+            .borrow()
+            .meeting
+            .question_context_chars
+            .clamp(2_000, 64_000);
+        append_meeting_transcript_context(
+            &mut messages,
+            &self.meeting_transcript.borrow(),
+            context_chars,
+        );
         if let Some(description) = screen_description
             && let Some((_, text)) = messages.last_mut()
         {
@@ -658,23 +939,34 @@ impl Overlay {
         self.set_status("");
     }
 
-    /// The tail of the live transcript, capped at `max_chars`.
-    fn recent_meeting_transcript(&self, max_chars: usize) -> Option<String> {
-        let transcript = self.meeting_transcript.borrow();
-        if transcript.is_empty() {
-            return None;
+    async fn wait_for_fresh_meeting_transcript(&self, transcript_len_at_submit: usize) {
+        let meeting_active = self.meeting_stop.borrow().is_some();
+        let current_len = self.meeting_transcript.borrow().len();
+        if !should_wait_for_fresh_transcript(meeting_active, transcript_len_at_submit, current_len)
+        {
+            return;
         }
-        let mut selected = Vec::new();
-        let mut length = 0;
-        for chunk in transcript.iter().rev() {
-            if length + chunk.len() > max_chars && !selected.is_empty() {
+
+        let timeout_ms = self
+            .config
+            .borrow()
+            .meeting
+            .question_context_wait_ms
+            .min(5_000);
+        if timeout_ms == 0 {
+            return;
+        }
+        let timeout = Duration::from_millis(timeout_ms);
+        let deadline = Instant::now() + timeout;
+        self.set_status("syncing the latest live context…");
+        while Instant::now() < deadline {
+            if self.meeting_transcript.borrow().len() > transcript_len_at_submit
+                || self.meeting_stop.borrow().is_none()
+            {
                 break;
             }
-            length += chunk.len();
-            selected.push(chunk.as_str());
+            glib::timeout_future(Duration::from_millis(100)).await;
         }
-        selected.reverse();
-        Some(selected.join("\n"))
     }
 
     async fn capture_avoiding_self(&self) -> anyhow::Result<Vec<u8>> {
@@ -736,11 +1028,16 @@ impl Overlay {
         self.scroll_to_end();
     }
 
-    fn show_meeting_line(&self, label: &str, text: &str, tag: &str) {
-        self.insert_tagged(&format!("\n{label}\n"), tag);
-        let buffer = self.response.buffer();
+    fn show_live_line(&self, label: &str, text: &str, tag: &str) {
+        if self.stack.visible_child_name().as_deref() != Some("live") {
+            self.live_button.set_label("Live •");
+        }
+        let buffer = self.live_response.buffer();
+        let mut iter = buffer.end_iter();
+        buffer.insert_with_tags_by_name(&mut iter, &format!("\n{label}\n"), &[tag]);
         buffer.insert(&mut buffer.end_iter(), &format!("{text}\n"));
-        self.scroll_to_end();
+        buffer.move_mark(&self.live_end_mark, &buffer.end_iter());
+        self.live_response.scroll_mark_onscreen(&self.live_end_mark);
     }
 
     fn insert_tagged(&self, text: &str, tag: &str) {
@@ -757,6 +1054,7 @@ impl Overlay {
 
     fn set_status(&self, text: &str) {
         self.status.set_text(text);
+        self.live_status.set_text(text);
     }
 
     // --- Settings ----------------------------------------------------------
@@ -1132,6 +1430,11 @@ impl Overlay {
         });
         let audio_device = entry_with(&settings.audio_device, "Pulse/PipeWire source name");
         let chunk_seconds = spin(1.0, 60.0, settings.chunk_seconds as f64);
+        let transcription_window_seconds =
+            spin(1.0, 60.0, settings.transcription_window_seconds as f64);
+        let question_context_wait_ms = spin(0.0, 5_000.0, settings.question_context_wait_ms as f64);
+        let question_context_chars =
+            spin(2_000.0, 64_000.0, settings.question_context_chars as f64);
         let silence_threshold = spin(0.0, 3000.0, settings.silence_threshold as f64);
 
         let transcription_backend = gtk::DropDown::from_strings(&[
@@ -1144,6 +1447,16 @@ impl Overlay {
         });
         let (whisper_catalog, whisper_download, whisper_remove, whisper_progress, whisper_status) =
             build_whisper_manager(&settings.whisper_model);
+        let transcription_compute = gtk::DropDown::from_strings(&[
+            "Automatic (prefer GPU, fall back to CPU)",
+            "Force GPU (fail if unavailable)",
+            "Force CPU",
+        ]);
+        transcription_compute.set_selected(match settings.transcription_compute.as_str() {
+            "gpu" => 1,
+            "cpu" => 2,
+            _ => 0,
+        });
 
         let provider_strs: Vec<&str> = provider_names.iter().map(String::as_str).collect();
         let transcription_provider = gtk::DropDown::from_strings(&provider_strs);
@@ -1208,8 +1521,12 @@ impl Overlay {
             audio_source,
             audio_device,
             chunk_seconds,
+            transcription_window_seconds,
+            question_context_wait_ms,
+            question_context_chars,
             silence_threshold,
             transcription_backend,
+            transcription_compute,
             whisper_catalog,
             whisper_download,
             whisper_remove,
@@ -1618,6 +1935,12 @@ impl Overlay {
             .into(),
             audio_device: meeting_widgets.audio_device.text().trim().into(),
             chunk_seconds: meeting_widgets.chunk_seconds.value_as_int() as u64,
+            transcription_window_seconds: meeting_widgets
+                .transcription_window_seconds
+                .value_as_int() as u64,
+            question_context_wait_ms: meeting_widgets.question_context_wait_ms.value_as_int()
+                as u64,
+            question_context_chars: meeting_widgets.question_context_chars.value_as_int() as usize,
             silence_threshold: meeting_widgets.silence_threshold.value_as_int() as u16,
             transcription_backend: if meeting_widgets.transcription_backend.selected() == 1 {
                 "remote".into()
@@ -1626,6 +1949,12 @@ impl Overlay {
             },
             whisper_model: selected_whisper_model(&meeting_widgets.whisper_catalog)
                 .unwrap_or_else(|| "base".into()),
+            transcription_compute: match meeting_widgets.transcription_compute.selected() {
+                1 => "gpu",
+                2 => "cpu",
+                _ => "auto",
+            }
+            .into(),
             transcription_provider,
             transcription_model: meeting_widgets.transcription_model.text().trim().into(),
             input_language: meeting_widgets.input_language.text().trim().into(),
@@ -1640,6 +1969,16 @@ impl Overlay {
             save_session: meeting_widgets.save_session.is_active(),
             analysis_task: meeting_widgets.analysis_task.text().trim().into(),
             profile: profile_name.clone(),
+        };
+        let provider_thinking = match widgets.provider.thinking.selected() {
+            1 => Some(true),
+            2 => Some(false),
+            _ => None,
+        };
+        let provider_reasoning_effort = if provider_thinking == Some(false) {
+            None
+        } else {
+            selected_effort(&widgets.provider.reasoning_effort)
         };
         let update = SettingsUpdate {
             hidden: widgets.general.hidden.is_active(),
@@ -1661,12 +2000,8 @@ impl Overlay {
             },
             provider_base_url: nonempty(widgets.provider.base_url.text().as_str()),
             provider_api_key_env: nonempty(widgets.provider.api_key_env.text().as_str()),
-            provider_thinking: match widgets.provider.thinking.selected() {
-                1 => Some(true),
-                2 => Some(false),
-                _ => None,
-            },
-            provider_reasoning_effort: selected_effort(&widgets.provider.reasoning_effort),
+            provider_thinking,
+            provider_reasoning_effort,
             model,
             api_key: (!key.is_empty()).then_some(key),
             clear_api_key: widgets.provider.clear_api_key.is_active(),
@@ -2099,6 +2434,27 @@ fn append_meeting_fields(page: &gtk::Box, meeting: &MeetingSettingsWidgets) {
         &meeting.chunk_seconds,
     ));
     page.append(&field_row(
+        "Local rolling window seconds",
+        &meeting.transcription_window_seconds,
+    ));
+    page.append(&note_label(
+        "Local Whisper reprocesses an overlapping window to preserve words cut between chunks. The window is automatically raised to at least the chunk duration. Larger windows improve continuity but use more local compute; they do not add provider tokens.",
+    ));
+    page.append(&field_row(
+        "Question context sync (ms; 0 = immediate)",
+        &meeting.question_context_wait_ms,
+    ));
+    page.append(&note_label(
+        "Context sync waits briefly for speech already being transcribed before sending a manual question. Waiting does not consume provider tokens. Use 0 for immediate questions, or increase it when complete live context matters more than latency.",
+    ));
+    page.append(&field_row(
+        "Question context budget (characters)",
+        &meeting.question_context_chars,
+    ));
+    page.append(&note_label(
+        "Nexora retains the complete transcript locally for the active session, then sends a bounded mix of recent speech and older fragments relevant to the question. A larger budget improves recall but uses more input tokens.",
+    ));
+    page.append(&field_row(
         "Silence gate (0 = disabled)",
         &meeting.silence_threshold,
     ));
@@ -2108,15 +2464,25 @@ fn append_meeting_fields(page: &gtk::Box, meeting: &MeetingSettingsWidgets) {
         &meeting.transcription_backend,
     ));
     page.append(&field_row("Local whisper model", &meeting.whisper_catalog));
+    page.append(&field_row(
+        "Local processing device",
+        &meeting.transcription_compute,
+    ));
     let whisper_actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     whisper_actions.append(&meeting.whisper_download);
     whisper_actions.append(&meeting.whisper_remove);
     page.append(&whisper_actions);
     page.append(&meeting.whisper_progress);
     page.append(&meeting.whisper_status);
-    page.append(&note_label(
-        "Local transcription runs on the CPU. `base` keeps up with 2-second chunks on most machines; try `small` or the quantized large-v3-turbo if your CPU is fast. Remote transcription uploads every audio chunk to the selected provider.",
-    ));
+    let gpu_backend = crate::whisper::compiled_gpu_backend()
+        .map(|backend| format!("This build includes the {backend} GPU backend."))
+        .unwrap_or_else(|| {
+            "This is a CPU-only build; use a Vulkan, CUDA, or ROCm build to enable GPU transcription."
+                .into()
+        });
+    page.append(&note_label(&format!(
+        "{gpu_backend} Automatic mode prefers GPU and safely falls back to CPU. GPU uses VRAM and usually reduces transcription delay; it does not consume AI-provider tokens. Remote transcription uploads every audio chunk to the selected provider."
+    )));
     page.append(&field_row(
         "Remote transcription provider",
         &meeting.transcription_provider,
@@ -2126,6 +2492,9 @@ fn append_meeting_fields(page: &gtk::Box, meeting: &MeetingSettingsWidgets) {
         &meeting.transcription_model,
     ));
     page.append(&field_row("Spoken language", &meeting.input_language));
+    page.append(&note_label(
+        "Set a language code such as `pt` or `en` when known. Automatic detection is convenient, but can switch languages incorrectly on short or noisy speech windows.",
+    ));
     page.append(&field_row(
         "Live translation (+1 call/chunk)",
         &meeting.translate,
@@ -2155,7 +2524,7 @@ fn append_meeting_fields(page: &gtk::Box, meeting: &MeetingSettingsWidgets) {
     page.append(&field_row("Save session", &meeting.save_session));
     page.append(&field_row("Analysis task", &meeting.analysis_task));
     page.append(&note_label(
-        "Token guide: transcription always makes one request per non-empty audio chunk. Translation adds a second request. Suggestions, objections and notes share one coaching request; enabling any of them activates it. Screen context adds image input to that request. Longer chunks reduce request frequency but increase delay.",
+        "Token guide: local transcription uses no provider tokens. Remote transcription makes one request per non-empty audio chunk. Translation adds another request. Suggestions, objections and notes share one coaching request; enabling any of them activates it. Screen context adds image input to that request. Longer chunks reduce request frequency but increase delay.",
     ));
 }
 
@@ -2503,4 +2872,87 @@ fn setup_layer_shell(window: &gtk::ApplicationWindow, config: &Config) {
     // Exclusive mode prevents using applications underneath and makes global
     // compositor binds feel inconsistent on Hyprland.
     window.set_keyboard_mode(KeyboardMode::OnDemand);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn manual_question_includes_transcript_after_session_finishes() {
+        let mut messages = vec![(Role::User, "sobre o que eles tao conversando?".into())];
+        let transcript = vec!["Qual que é a pessoa?".into()];
+
+        append_meeting_transcript_context(&mut messages, &transcript, 6_000);
+
+        assert!(messages[0].1.contains("Qual que é a pessoa?"));
+    }
+
+    #[test]
+    fn manual_question_waits_for_first_transcript_while_capture_is_active() {
+        assert!(should_wait_for_fresh_transcript(true, 0, 0));
+        assert!(!should_wait_for_fresh_transcript(true, 0, 1));
+        assert!(!should_wait_for_fresh_transcript(false, 0, 0));
+    }
+
+    #[test]
+    fn manual_question_is_not_sent_without_context_during_active_session() {
+        assert!(!can_send_manual_question(true, &[]));
+        assert!(can_send_manual_question(
+            true,
+            &["E para os caras ficarem no Brasil?".into()]
+        ));
+        assert!(can_send_manual_question(false, &[]));
+    }
+
+    #[test]
+    fn live_session_content_is_routed_away_from_chat_history() {
+        assert_eq!(
+            meeting_event_surface(&SessionEvent::Transcript("speech".into())),
+            MeetingEventSurface::Live
+        );
+        assert_eq!(
+            meeting_event_surface(&SessionEvent::Insight("suggestion".into())),
+            MeetingEventSurface::Live
+        );
+        assert_eq!(
+            meeting_event_surface(&SessionEvent::Summary("summary".into())),
+            MeetingEventSurface::Live
+        );
+    }
+
+    #[test]
+    fn empty_live_coach_placeholder_is_not_presented() {
+        assert_eq!(visible_coaching_text("Wait for more context."), None);
+        assert_eq!(visible_coaching_text("  wait for more context.  "), None);
+        assert_eq!(
+            visible_coaching_text("Ask whether the deadline is flexible."),
+            Some("Ask whether the deadline is flexible.")
+        );
+    }
+
+    #[test]
+    fn manual_question_waits_for_an_inflight_audio_window() {
+        assert!(should_wait_for_fresh_transcript(true, 3, 3));
+        assert!(!should_wait_for_fresh_transcript(true, 3, 4));
+        assert!(!should_wait_for_fresh_transcript(false, 3, 3));
+    }
+
+    #[test]
+    fn manual_question_retrieves_relevant_context_from_early_in_a_long_session() {
+        let mut transcript = vec![
+            "Marina explicou que a solução proposta usa filas persistentes chamadas Aurora.".into(),
+        ];
+        transcript
+            .extend((0..250).map(|index| format!("Discussão recente sem relação número {index}.")));
+        let mut messages = vec![(
+            Role::User,
+            "Qual era o nome das filas persistentes mencionadas pela Marina?".into(),
+        )];
+
+        append_meeting_transcript_context(&mut messages, &transcript, 6_000);
+
+        assert!(messages[0].1.contains("Aurora"));
+        assert!(messages[0].1.contains("Most relevant earlier speech"));
+    }
 }

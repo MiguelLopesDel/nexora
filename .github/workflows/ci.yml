@@ -19,7 +19,7 @@ jobs:
       - name: Install system dependencies
         # gcc-c++/cmake build the vendored whisper.cpp; clang-devel provides
         # the libclang that bindgen needs for its generated bindings.
-        run: dnf install -y gcc gcc-c++ cmake clang-devel gtk4-devel gtk4-layer-shell-devel openssl-devel curl tar xz
+        run: dnf install -y gcc gcc-c++ cmake clang-devel gtk4-devel gtk4-layer-shell-devel openssl-devel curl tar xz vulkan-loader-devel glslc
 
       - uses: dtolnay/rust-toolchain@stable
         with:

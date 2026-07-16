@@ -182,6 +182,18 @@ pub struct MeetingConfig {
     pub audio_device: String,
     #[serde(default = "default_chunk_seconds")]
     pub chunk_seconds: u64,
+    /// Rolling local Whisper window. It may be longer than the capture stride
+    /// so words cut at chunk boundaries are heard again with surrounding audio.
+    #[serde(default = "default_transcription_window_seconds")]
+    pub transcription_window_seconds: u64,
+    /// Maximum time to wait for an in-flight transcript update before sending
+    /// a manual question. Zero sends immediately.
+    #[serde(default = "default_question_context_wait_ms")]
+    pub question_context_wait_ms: u64,
+    /// Maximum transcript characters attached to a manual question. Context
+    /// selection combines recent speech with relevant older fragments.
+    #[serde(default = "default_question_context_chars")]
+    pub question_context_chars: usize,
     /// RMS-like PCM amplitude below which a chunk is skipped. Zero disables it.
     #[serde(default = "default_silence_threshold")]
     pub silence_threshold: u16,
@@ -192,6 +204,10 @@ pub struct MeetingConfig {
     /// Curated whisper.cpp checkpoint used when the backend is "local".
     #[serde(default = "default_whisper_model")]
     pub whisper_model: String,
+    /// "auto" prefers an available compiled GPU backend, "gpu" requires it,
+    /// and "cpu" disables GPU use even in a GPU-enabled build.
+    #[serde(default = "default_transcription_compute")]
+    pub transcription_compute: String,
     #[serde(default = "default_transcription_provider")]
     pub transcription_provider: String,
     #[serde(default = "default_transcription_model")]
@@ -228,9 +244,13 @@ impl Default for MeetingConfig {
             audio_source: default_audio_source(),
             audio_device: String::new(),
             chunk_seconds: default_chunk_seconds(),
+            transcription_window_seconds: default_transcription_window_seconds(),
+            question_context_wait_ms: default_question_context_wait_ms(),
+            question_context_chars: default_question_context_chars(),
             silence_threshold: default_silence_threshold(),
             transcription_backend: default_transcription_backend(),
             whisper_model: default_whisper_model(),
+            transcription_compute: default_transcription_compute(),
             transcription_provider: default_transcription_provider(),
             transcription_model: default_transcription_model(),
             input_language: String::new(),
@@ -255,6 +275,15 @@ fn default_audio_source() -> String {
 fn default_chunk_seconds() -> u64 {
     2
 }
+fn default_transcription_window_seconds() -> u64 {
+    4
+}
+fn default_question_context_wait_ms() -> u64 {
+    1_200
+}
+fn default_question_context_chars() -> usize {
+    12_000
+}
 fn default_silence_threshold() -> u16 {
     180
 }
@@ -263,6 +292,9 @@ fn default_transcription_backend() -> String {
 }
 fn default_whisper_model() -> String {
     "base".into()
+}
+fn default_transcription_compute() -> String {
+    "auto".into()
 }
 fn default_transcription_provider() -> String {
     "openai".into()
@@ -546,9 +578,14 @@ pub fn apply_settings(update: &SettingsUpdate) -> Result<()> {
     meeting["audio_source"] = value(update.meeting.audio_source.clone());
     meeting["audio_device"] = value(update.meeting.audio_device.clone());
     meeting["chunk_seconds"] = value(update.meeting.chunk_seconds as i64);
+    meeting["transcription_window_seconds"] =
+        value(update.meeting.transcription_window_seconds as i64);
+    meeting["question_context_wait_ms"] = value(update.meeting.question_context_wait_ms as i64);
+    meeting["question_context_chars"] = value(update.meeting.question_context_chars as i64);
     meeting["silence_threshold"] = value(update.meeting.silence_threshold as i64);
     meeting["transcription_backend"] = value(update.meeting.transcription_backend.clone());
     meeting["whisper_model"] = value(update.meeting.whisper_model.clone());
+    meeting["transcription_compute"] = value(update.meeting.transcription_compute.clone());
     meeting["transcription_provider"] = value(update.meeting.transcription_provider.clone());
     meeting["transcription_model"] = value(update.meeting.transcription_model.clone());
     meeting["input_language"] = value(update.meeting.input_language.clone());
@@ -624,6 +661,10 @@ mod tests {
         assert!(config.general.hidden);
         assert_eq!(config.general.layer_shell, "auto");
         assert_eq!(config.meeting.chunk_seconds, 2);
+        assert_eq!(config.meeting.transcription_window_seconds, 4);
+        assert_eq!(config.meeting.question_context_wait_ms, 1_200);
+        assert_eq!(config.meeting.question_context_chars, 12_000);
+        assert_eq!(config.meeting.transcription_compute, "auto");
         assert_eq!(config.meeting.profile, "general");
         assert_eq!(config.vision.model, "qwen3-vl:4b");
         assert!(config.preset("explain-screen").is_ok());

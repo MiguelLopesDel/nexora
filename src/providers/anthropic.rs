@@ -153,4 +153,20 @@ mod tests {
         assert_eq!(messages[0]["content"].as_array().unwrap().len(), 1);
         assert_eq!(messages[2]["content"][0]["type"], "image");
     }
+
+    #[test]
+    fn meeting_transcript_context_reaches_request_body() {
+        let contextual_prompt = "sobre o que eles tao conversando?\n\nLive meeting transcript (most recent speech, for context):\nQual que é a pessoa?";
+        let request = ChatRequest {
+            model: "claude-test".into(),
+            system: None,
+            messages: vec![(Role::User, contextual_prompt.into())],
+            image_png: None,
+            max_tokens: 32,
+        };
+
+        let body = build_body(&request);
+
+        assert_eq!(body["messages"][0]["content"][0]["text"], contextual_prompt);
+    }
 }

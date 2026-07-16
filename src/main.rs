@@ -38,6 +38,16 @@ enum Command {
         /// Preset name under [presets] in config.toml
         preset: String,
     },
+    /// Ask an arbitrary question through the resident overlay
+    Ask {
+        /// Question to send through the configured ask task
+        prompt: String,
+    },
+    /// Control the live session from scripts and compositor keybinds
+    Session {
+        #[command(subcommand)]
+        action: SessionAction,
+    },
     /// Quit the resident instance
     Quit,
     /// Anti-capture (screen-share hiding) helpers
@@ -56,6 +66,14 @@ enum Command {
 enum HiddenAction {
     /// Report whether this compositor can hide Nexora from screen capture
     Status,
+}
+
+#[derive(Subcommand)]
+enum SessionAction {
+    /// Start live capture and transcription
+    Start,
+    /// Stop capture and finalize the session
+    Stop,
 }
 
 #[derive(Subcommand)]
@@ -117,6 +135,13 @@ fn main() -> std::process::ExitCode {
         Some(Command::Toggle) => vec!["toggle"],
         Some(Command::Quit) => vec!["quit"],
         Some(Command::Run { preset }) => vec!["run", preset],
+        Some(Command::Ask { prompt }) => vec!["ask", prompt],
+        Some(Command::Session {
+            action: SessionAction::Start,
+        }) => vec!["session", "start"],
+        Some(Command::Session {
+            action: SessionAction::Stop,
+        }) => vec!["session", "stop"],
         Some(Command::Hidden { .. }) | Some(Command::Config { .. }) => unreachable!(),
     };
     std::process::ExitCode::from(app::run(&forwarded) as u8)

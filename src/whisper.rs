@@ -1,5 +1,5 @@
 //! Local transcription with whisper.cpp: curated model downloads kept in
-//! `$XDG_DATA_HOME/nexora/whisper/` and CPU inference on raw PCM chunks.
+//! `$XDG_DATA_HOME/nexora/whisper/` and local inference on raw PCM chunks.
 
 use std::path::PathBuf;
 use std::sync::{Mutex, Once};
@@ -8,6 +8,13 @@ use anyhow::{Context, Result, bail};
 use async_channel::Sender;
 use futures_util::StreamExt;
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
+
+#[cfg(any(
+    all(feature = "whisper-vulkan", feature = "whisper-cuda"),
+    all(feature = "whisper-vulkan", feature = "whisper-rocm"),
+    all(feature = "whisper-cuda", feature = "whisper-rocm")
+))]
+compile_error!("enable only one whisper GPU backend at a time");
 
 const SAMPLE_RATE: usize = 16_000;
 /// whisper.cpp degrades below roughly one second of audio; pad short chunks.
@@ -28,27 +35,123 @@ pub const PRESETS: &[WhisperModelPreset] = &[
         id: "tiny",
         download: "78 MB",
         size: "Ultra-light",
-        description: "Fastest on weak CPUs, least accurate",
+        description: "Fastest on weak hardware, least accurate",
     },
     WhisperModelPreset {
         id: "base",
         download: "148 MB",
         size: "Recommended",
-        description: "Good balance of speed and accuracy on most CPUs",
+        description: "Good balance of speed and accuracy",
     },
     WhisperModelPreset {
         id: "small",
         download: "488 MB",
         size: "Quality",
-        description: "Noticeably better accuracy, needs a mid-range CPU",
+        description: "Noticeably better accuracy, needs more compute",
     },
     WhisperModelPreset {
         id: "large-v3-turbo-q5_0",
         download: "574 MB",
         size: "Best",
-        description: "Top accuracy (quantized large-v3-turbo), needs a fast CPU",
+        description: "Top accuracy (quantized large-v3-turbo), GPU recommended",
     },
 ];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComputePreference {
+    Auto,
+    Gpu,
+    Cpu,
+}
+
+impl ComputePreference {
+    pub fn from_config(value: &str) -> Result<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "auto" => Ok(Self::Auto),
+            "gpu" => Ok(Self::Gpu),
+            "cpu" => Ok(Self::Cpu),
+            other => bail!("unknown transcription compute mode `{other}`"),
+        }
+    }
+}
+
+pub fn compiled_gpu_backend() -> Option<&'static str> {
+    #[cfg(feature = "whisper-vulkan")]
+    return Some("Vulkan");
+    #[cfg(all(not(feature = "whisper-vulkan"), feature = "whisper-cuda"))]
+    return Some("CUDA");
+    #[cfg(all(
+        not(feature = "whisper-vulkan"),
+        not(feature = "whisper-cuda"),
+        feature = "whisper-rocm"
+    ))]
+    return Some("ROCm/HIP");
+    #[cfg(not(any(
+        feature = "whisper-vulkan",
+        feature = "whisper-cuda",
+        feature = "whisper-rocm"
+    )))]
+    None
+}
+
+/// Return only the new suffix from two transcripts of overlapping audio.
+/// Exact multi-word overlap is intentionally conservative: when Whisper
+/// revises a phrase, retaining a little duplication is safer than deleting it.
+pub fn novel_transcript(previous: &str, current: &str) -> String {
+    let previous_words: Vec<(&str, String)> = previous
+        .split_whitespace()
+        .map(|word| (word, normalize_word(word)))
+        .filter(|(_, normalized)| !normalized.is_empty())
+        .collect();
+    let current_words: Vec<(&str, String)> = current
+        .split_whitespace()
+        .map(|word| (word, normalize_word(word)))
+        .filter(|(_, normalized)| !normalized.is_empty())
+        .collect();
+    let max_overlap = previous_words.len().min(current_words.len());
+    for overlap in (2..=max_overlap).rev() {
+        let previous_start = previous_words.len() - overlap;
+        for current_start in 0..=current_words.len() - overlap {
+            let matches = previous_words[previous_start..]
+                .iter()
+                .zip(&current_words[current_start..current_start + overlap])
+                .all(|(left, right)| left.1 == right.1);
+            if matches {
+                return current_words[current_start + overlap..]
+                    .iter()
+                    .map(|(word, _)| *word)
+                    .collect::<Vec<_>>()
+                    .join(" ");
+            }
+        }
+    }
+    current.trim().to_string()
+}
+
+fn normalize_word(word: &str) -> String {
+    word.chars()
+        .filter(|character| character.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+fn context_parameters(preference: ComputePreference) -> Result<WhisperContextParameters<'static>> {
+    let use_gpu = match preference {
+        ComputePreference::Auto => compiled_gpu_backend().is_some(),
+        ComputePreference::Gpu => {
+            if compiled_gpu_backend().is_none() {
+                bail!(
+                    "GPU transcription was requested, but this Nexora binary has no whisper GPU backend; rebuild with `--features whisper-vulkan`, `whisper-cuda`, or `whisper-rocm`"
+                );
+            }
+            true
+        }
+        ComputePreference::Cpu => false,
+    };
+    let mut params = WhisperContextParameters::default();
+    params.use_gpu(use_gpu);
+    Ok(params)
+}
 
 #[derive(Debug, Clone)]
 pub struct DownloadProgress {
@@ -130,16 +233,16 @@ pub fn remove_model(id: &str) -> Result<()> {
     Ok(())
 }
 
-/// A loaded whisper.cpp model. Inference is CPU-bound and mutually exclusive,
-/// so callers run `transcribe` inside `spawn_blocking` and share the value
-/// behind an `Arc`.
+/// A loaded whisper.cpp model. Inference is mutually exclusive, so callers run
+/// `transcribe` inside `spawn_blocking` and share the value behind an `Arc`.
 pub struct Transcriber {
     state: Mutex<whisper_rs::WhisperState>,
     threads: i32,
+    compute_label: String,
 }
 
 impl Transcriber {
-    pub fn load(path: &std::path::Path) -> Result<Self> {
+    pub fn load(path: &std::path::Path, preference: ComputePreference) -> Result<Self> {
         // Route whisper.cpp's chatty stderr output through the log crate
         // (which is a no-op here) exactly once.
         static HOOKS: Once = Once::new();
@@ -148,8 +251,43 @@ impl Transcriber {
         let path = path
             .to_str()
             .context("whisper model path is not valid UTF-8")?;
-        let context = WhisperContext::new_with_params(path, WhisperContextParameters::default())
-            .with_context(|| format!("could not load whisper model at {path}"))?;
+        let params = context_parameters(preference)?;
+        let gpu_requested = params.use_gpu;
+        let (context, compute_label) = match WhisperContext::new_with_params(path, params) {
+            Ok(context) => {
+                let label = if gpu_requested {
+                    format!(
+                        "GPU ({})",
+                        compiled_gpu_backend().unwrap_or("unknown backend")
+                    )
+                } else if preference == ComputePreference::Cpu {
+                    "CPU (forced)".into()
+                } else {
+                    "CPU (this build has no GPU backend)".into()
+                };
+                (context, label)
+            }
+            Err(gpu_error) if preference == ComputePreference::Auto && gpu_requested => {
+                let mut cpu_params = WhisperContextParameters::default();
+                cpu_params.use_gpu(false);
+                let context = WhisperContext::new_with_params(path, cpu_params).with_context(|| {
+                    format!(
+                        "could not load whisper model at {path}; GPU initialization also failed: {gpu_error}"
+                    )
+                })?;
+                (
+                    context,
+                    format!(
+                        "CPU fallback ({} initialization failed)",
+                        compiled_gpu_backend().unwrap_or("GPU")
+                    ),
+                )
+            }
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("could not load whisper model at {path}"));
+            }
+        };
         let state = context.create_state().context("whisper state failed")?;
         let threads = std::thread::available_parallelism()
             .map(|cores| cores.get().min(8) as i32)
@@ -157,7 +295,12 @@ impl Transcriber {
         Ok(Self {
             state: Mutex::new(state),
             threads,
+            compute_label,
         })
+    }
+
+    pub fn compute_label(&self) -> &str {
+        &self.compute_label
     }
 
     /// Transcribe a raw s16le 16 kHz mono chunk. An empty `language` lets the
@@ -226,7 +369,8 @@ mod tests {
     fn loads_a_model_and_transcribes_silence() {
         let path = model_path("tiny");
         assert!(path.exists(), "download ggml-tiny.bin first");
-        let transcriber = Transcriber::load(&path).expect("model should load");
+        let transcriber =
+            Transcriber::load(&path, ComputePreference::Auto).expect("model should load");
         let silence = vec![0_u8; SAMPLE_RATE * 2 * 2];
         let text = transcriber
             .transcribe(&silence, "")
@@ -243,12 +387,62 @@ mod tests {
     fn transcribes_speech_from_env_pcm() {
         let pcm_path = std::env::var("NEXORA_TEST_PCM").expect("set NEXORA_TEST_PCM");
         let pcm = std::fs::read(pcm_path).expect("PCM file should be readable");
-        let transcriber = Transcriber::load(&model_path("tiny")).expect("model should load");
+        let transcriber = Transcriber::load(&model_path("tiny"), ComputePreference::Auto)
+            .expect("model should load");
+        println!("compute: {}", transcriber.compute_label());
         let text = transcriber
             .transcribe(&pcm, "en")
             .expect("inference should run");
         assert!(!text.is_empty(), "speech produced an empty transcript");
         println!("transcript: {text}");
+    }
+
+    /// Replays speech through independent live-sized windows. This catches
+    /// boundary loss that full-file transcription cannot reveal.
+    #[test]
+    #[ignore = "requires a downloaded whisper model and NEXORA_TEST_PCM"]
+    fn transcribes_speech_in_live_windows() {
+        let pcm_path = std::env::var("NEXORA_TEST_PCM").expect("set NEXORA_TEST_PCM");
+        let seconds: usize = std::env::var("NEXORA_TEST_CHUNK_SECONDS")
+            .unwrap_or_else(|_| "2".into())
+            .parse()
+            .expect("NEXORA_TEST_CHUNK_SECONDS must be a number");
+        let stride_seconds: usize = std::env::var("NEXORA_TEST_STRIDE_SECONDS")
+            .unwrap_or_else(|_| seconds.to_string())
+            .parse()
+            .expect("NEXORA_TEST_STRIDE_SECONDS must be a number");
+        let pcm = std::fs::read(pcm_path).expect("PCM file should be readable");
+        let transcriber = Transcriber::load(&model_path("tiny"), ComputePreference::Cpu)
+            .expect("model should load");
+        let bytes_per_window = SAMPLE_RATE * 2 * seconds;
+        let bytes_per_stride = SAMPLE_RATE * 2 * stride_seconds;
+        let raw_transcript: Vec<String> = (0..pcm.len())
+            .step_by(bytes_per_stride)
+            .map(|start| &pcm[start..(start + bytes_per_window).min(pcm.len())])
+            .map(|window| transcriber.transcribe(window, "en").expect("window failed"))
+            .filter(|text| !text.is_empty())
+            .collect();
+        let mut previous = None;
+        let transcript: Vec<String> = raw_transcript
+            .into_iter()
+            .filter_map(|current| {
+                let novel = previous
+                    .as_deref()
+                    .map_or_else(|| current.clone(), |old| novel_transcript(old, &current));
+                previous = Some(current);
+                (!novel.is_empty()).then_some(novel)
+            })
+            .collect();
+        let joined = transcript.join(" ").to_ascii_lowercase();
+        println!("live transcript ({seconds}s/{stride_seconds}s): {joined}");
+        assert!(
+            joined.contains("country can do for you"),
+            "first clause lost"
+        );
+        assert!(
+            joined.contains("you can do for your country"),
+            "second clause lost"
+        );
     }
 
     #[test]
@@ -258,5 +452,41 @@ mod tests {
         ids.dedup();
         assert_eq!(ids.len(), PRESETS.len());
         assert!(ids.contains(&"base"));
+    }
+
+    #[test]
+    fn overlapping_transcripts_emit_only_the_new_suffix() {
+        assert_eq!(
+            novel_transcript(
+                "country can do for you",
+                "one pre can do for you ask what you can do"
+            ),
+            "ask what you can do"
+        );
+        assert_eq!(
+            novel_transcript(
+                "ask what you can do for your",
+                "ask what you can do for your country."
+            ),
+            "country."
+        );
+    }
+
+    #[test]
+    fn cpu_compute_never_enables_gpu() {
+        let params = context_parameters(ComputePreference::Cpu).unwrap();
+        assert!(!params.use_gpu);
+    }
+
+    #[test]
+    fn automatic_compute_matches_the_compiled_backend() {
+        let params = context_parameters(ComputePreference::Auto).unwrap();
+        assert_eq!(params.use_gpu, compiled_gpu_backend().is_some());
+    }
+
+    #[test]
+    fn forced_gpu_requires_a_gpu_enabled_build() {
+        let result = context_parameters(ComputePreference::Gpu);
+        assert_eq!(result.is_ok(), compiled_gpu_backend().is_some());
     }
 }

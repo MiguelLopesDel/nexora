@@ -10,7 +10,7 @@ Think "Jarvis on your desktop", except it's a single small native binary, fully 
 - **Conversation history** — the overlay keeps the whole conversation, so follow-up questions have context. `Ctrl+N` starts a fresh chat. Conversations are saved to `~/.local/share/nexora/history/` and the last one is restored on launch. Screenshots are never written to history and never resent on follow-ups (they're the token-heavy part).
 - **Explain my screen** — click 🖥 in the overlay (or run `nexora run explain-screen`) to grab a screenshot through the XDG desktop portal and either send it directly to a multimodal model or convert it to OCR text through a separate vision proxy. This lets text-only models such as DeepSeek use screen context. While a live meeting is running, a typed question also picks up the recent speech as context, so you can ask about what is being said.
 - **Live meeting assistant** — click 🎙 to continuously transcribe microphone or system audio, translate speech, surface reply ideas and objection handling, build notes, optionally use periodic screenshots as context, and generate a final summary. Capture, transcription and coaching run independently, so a slow reasoning response does not pause incoming transcript updates.
-- **Local transcription by default** — a built-in whisper.cpp engine transcribes on your CPU, so meeting audio never leaves the machine and costs nothing per minute. Curated multilingual models (tiny → quantized large-v3-turbo) download from the official whisper.cpp repository with one click in Settings. Remote transcription through any `/audio/transcriptions` API remains available as an explicit opt-in.
+- **Local transcription by default** — a built-in whisper.cpp engine prefers GPU acceleration and falls back to CPU, so meeting audio never leaves the machine and costs nothing per minute. Curated multilingual models (tiny → quantized large-v3-turbo) download from the official whisper.cpp repository with one click in Settings. Remote transcription through any `/audio/transcriptions` API remains available as an explicit opt-in.
 - **Local Vision & OCR** — choose a curated Qwen3-VL, MiniCPM-V or Moondream model in Settings, download it through Ollama with progress, and use it only for private screen description/OCR before the main model request.
 - **Configurable assistant profiles** — choose a built-in interview, sales, study, presentation, or programming coach, or create a named prompt profile in the settings panel.
 - **Any provider** — Anthropic natively, plus every OpenAI-compatible API: OpenAI, OpenRouter, DeepSeek, Gemini (compat endpoint), Ollama / llama.cpp running locally. Refresh each provider's live `/models` catalog from the UI, choose a model, and configure thinking/reasoning controls.
@@ -47,18 +47,18 @@ On Hyprland the rule keyword and syntax changed across versions. Nexora tries cu
 ### Dependencies
 
 - GTK 4 ≥ 4.10, gtk4-layer-shell, `xdg-desktop-portal`, and `parec` (PulseAudio utilities; it also works with PipeWire's Pulse compatibility layer).
-- Building needs a C/C++ toolchain, CMake, and libclang (the local whisper.cpp transcription engine is compiled in and its bindings are generated with bindgen).
+- Building needs a C/C++ toolchain, CMake, libclang, Vulkan headers/loader, and `glslc` (the local whisper.cpp transcription engine uses Vulkan GPU acceleration by default).
 - Optional: [Ollama](https://ollama.com/) for downloadable local Vision & OCR models.
 
 ```bash
 # Debian / Ubuntu
-sudo apt install libgtk-4-dev libgtk4-layer-shell-dev pulseaudio-utils cmake g++ libclang-dev
+sudo apt install libgtk-4-dev libgtk4-layer-shell-dev pulseaudio-utils cmake g++ libclang-dev libvulkan-dev glslc
 
 # Fedora
-sudo dnf install gtk4-devel gtk4-layer-shell-devel pulseaudio-utils cmake gcc-c++ clang-devel
+sudo dnf install gtk4-devel gtk4-layer-shell-devel pulseaudio-utils cmake gcc-c++ clang-devel vulkan-loader-devel glslc
 
 # Arch
-sudo pacman -S gtk4 gtk4-layer-shell libpulse cmake gcc clang
+sudo pacman -S gtk4 gtk4-layer-shell libpulse cmake gcc clang vulkan-headers vulkan-icd-loader shaderc
 ```
 
 ### Build
@@ -69,6 +69,11 @@ cd nexora
 cargo build --release
 install -Dm755 target/release/nexora ~/.local/bin/nexora
 ```
+
+Vulkan works across current Intel, AMD, and NVIDIA Linux drivers. For an
+NVIDIA CUDA build use `cargo build --release --no-default-features --features
+whisper-cuda`; for AMD ROCm use `whisper-rocm`. A portable CPU-only build uses
+`cargo build --release --no-default-features`.
 
 ## Quick start
 
@@ -83,7 +88,17 @@ See [config.example.toml](config.example.toml) for the full commented configurat
 
 ### Live meetings
 
-Open ⚙ and configure the **Live meeting assistant** section before pressing 🎙. Choose **System audio**, **Microphone**, mix both, or paste a Pulse/PipeWire source name under **Custom device**. Transcription defaults to the **local whisper.cpp backend**: download a model once in Settings (`base` is the recommended starting point) and audio is transcribed on your CPU without leaving the machine. Switching the backend to **Remote API** uploads each chunk to an OpenAI-compatible `/audio/transcriptions` endpoint instead. Coaching and translation use the configured analysis task. The default two-second audio windows are processed continuously in a task separate from coaching. A configurable local silence gate skips quiet windows, and queued transcripts are combined so suggestions stay near the live conversation instead of replaying stale chunks.
+Open ⚙ and configure the **Live meeting assistant** section before pressing 🎙. Choose **System audio**, **Microphone**, mix both, or paste a Pulse/PipeWire source name under **Custom device**. Transcription defaults to the **local whisper.cpp backend**: download a model once in Settings (`base` is the recommended starting point) and audio stays on your computer. **Automatic** processing prefers the GPU backend included in the binary and falls back to CPU; the interface can also require GPU or force CPU. Switching the backend to **Remote API** uploads each chunk to an OpenAI-compatible `/audio/transcriptions` endpoint instead. Coaching and translation use the configured analysis task. The default two-second audio windows are processed continuously in a task separate from coaching. A configurable local silence gate skips quiet windows, and queued transcripts are combined so suggestions stay near the live conversation instead of replaying stale chunks.
+
+Manual questions remain in **Chat**. Transcript fragments, translations, coaching,
+and summaries live on the separate **Live** page and never become chat turns.
+When a live question is submitted, the configurable context-sync delay briefly
+waits for an in-flight transcript update; set it to `0` for immediate sending.
+The active session keeps its complete text transcript locally. Each question
+sends only a configurable, token-bounded mix of recent speech and older
+fragments retrieved from the question, so long sessions do not become an
+ever-growing prompt. Local Whisper uses an overlapping rolling window to avoid
+losing words at capture boundaries.
 
 Recording, translation, screen context, notes, summaries, and on-disk storage are independently configurable. Saved sessions go to `~/.local/share/nexora/sessions/`. Obtain consent before recording other people and review your provider's data-retention policy. Automatic screen context may capture sensitive information; it is off by default.
 
@@ -139,6 +154,9 @@ The Wayland overlay uses on-demand keyboard focus. While Nexora is open, click a
 nexora                 show the overlay (also starts the resident instance)
 nexora toggle          show/hide the overlay
 nexora run <preset>    fire a preset (built-in: explain-screen)
+nexora ask <question>  ask through the resident overlay
+nexora session start   start live capture and transcription
+nexora session stop    stop and finalize the live session
 nexora hidden status   anti-capture support report for this compositor
 nexora config init     write a starter config
 nexora config path     print the config path
@@ -152,7 +170,7 @@ nexora quit            stop the resident instance
 - [x] Live audio transcription, translation, coaching, notes, and summaries
 - [x] Local Vision/OCR proxy with curated Ollama downloads
 - [x] Local whisper.cpp transcription backend (default, with curated model downloads)
-- [ ] GPU acceleration for local transcription (CPU-only today)
+- [x] GPU acceleration for local transcription (Vulkan default; CUDA/ROCm builds available)
 - [ ] GlobalShortcuts portal support (keybinds without touching compositor config)
 - [x] Opt-in periodic screen understanding with configurable capture interval
 - [ ] Prebuilt packages (.deb / .rpm / AUR)

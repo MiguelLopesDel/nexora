@@ -1,6 +1,7 @@
 //! Opt-in live meeting pipeline: Pulse/PipeWire capture, transcription,
 //! translation, coaching, screen context, notes, and final summary.
 
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
@@ -39,14 +40,26 @@ pub enum SessionEvent {
 
 /// Where audio chunks are transcribed. Local keeps audio on this computer.
 pub enum TranscriptionBackend {
-    Local { model_path: PathBuf },
-    Remote { provider: ProviderConfig },
+    Local {
+        model_path: PathBuf,
+        compute: whisper::ComputePreference,
+    },
+    Remote {
+        provider: ProviderConfig,
+    },
 }
 
 /// The backend after session start-up (local models load once, up front).
 enum Transcription {
     Local(Arc<whisper::Transcriber>),
     Remote { provider: ProviderConfig },
+}
+
+struct TranscriptionOptions {
+    model: String,
+    language: String,
+    silence_threshold: u16,
+    local_window_seconds: u64,
 }
 
 pub struct SessionServices {
@@ -90,15 +103,20 @@ async fn run(
         bail!("audio chunk duration must be between 1 and 60 seconds");
     }
     let transcription = match transcription {
-        TranscriptionBackend::Local { model_path } => {
+        TranscriptionBackend::Local {
+            model_path,
+            compute,
+        } => {
             let _ = events
                 .send(SessionEvent::Status("loading local whisper model…".into()))
                 .await;
             let model_path = model_path.clone();
-            let transcriber =
-                tokio::task::spawn_blocking(move || whisper::Transcriber::load(&model_path))
-                    .await
-                    .context("whisper loading task failed")??;
+            let compute = *compute;
+            let transcriber = tokio::task::spawn_blocking(move || {
+                whisper::Transcriber::load(&model_path, compute)
+            })
+            .await
+            .context("whisper loading task failed")??;
             Transcription::Local(Arc::new(transcriber))
         }
         TranscriptionBackend::Remote { provider } => {
@@ -118,24 +136,42 @@ async fn run(
         * settings.chunk_seconds as usize;
     let audio = capture_audio(devices.clone(), bytes_per_chunk, running.clone());
     let backend_label = match &transcription {
-        Transcription::Local(_) => format!("local whisper ({})", settings.whisper_model),
+        Transcription::Local(transcriber) => format!(
+            "local whisper ({}, {})",
+            settings.whisper_model,
+            transcriber.compute_label()
+        ),
         Transcription::Remote { .. } => "remote transcription API".to_string(),
+    };
+    let cadence = match &transcription {
+        Transcription::Local(_) => format!(
+            "{}s capture stride · {}s rolling window",
+            settings.chunk_seconds,
+            settings
+                .transcription_window_seconds
+                .max(settings.chunk_seconds)
+        ),
+        Transcription::Remote { .. } => format!("{}s uploaded windows", settings.chunk_seconds),
     };
     let transcriptions = transcribe_audio(
         audio,
         transcription,
-        settings.transcription_model.clone(),
-        settings.input_language.clone(),
-        settings.silence_threshold,
+        TranscriptionOptions {
+            model: settings.transcription_model.clone(),
+            language: settings.input_language.clone(),
+            silence_threshold: settings.silence_threshold,
+            local_window_seconds: settings
+                .transcription_window_seconds
+                .max(settings.chunk_seconds),
+        },
         events.clone(),
         running.clone(),
     );
 
     let _ = events
         .send(SessionEvent::Status(format!(
-            "continuous transcription · {backend_label} · {} · {}s audio windows",
+            "continuous transcription · {backend_label} · {} · {cadence}",
             devices.join(" + "),
-            settings.chunk_seconds
         )))
         .await;
 
@@ -294,11 +330,7 @@ async fn run(
         .await;
 
     let summary = if settings.summary && !transcript.is_empty() {
-        let prompt = format!(
-            "Summarize this session. Include decisions, key points, objections, open questions, and action items with owners when stated. Do not invent missing details.\n\nRolling notes:\n{}\n\nRecent transcript:\n{}",
-            recent_transcript(&notes, 20_000),
-            recent_transcript(&transcript, 40_000),
-        );
+        let prompt = session_summary_prompt(&notes, &transcript);
         match complete_chat(
             analysis_provider,
             request(analysis_task, prompt, profile.system.clone(), None),
@@ -340,14 +372,19 @@ async fn run(
 fn transcribe_audio(
     audio: async_channel::Receiver<Result<Vec<u8>, String>>,
     backend: Transcription,
-    model: String,
-    language: String,
-    silence_threshold: u16,
+    options: TranscriptionOptions,
     events: Sender<SessionEvent>,
     mut running: watch::Receiver<bool>,
 ) -> async_channel::Receiver<String> {
     let (tx, rx) = async_channel::unbounded();
     tokio::spawn(async move {
+        let local_window_bytes = SAMPLE_RATE as usize
+            * CHANNELS as usize
+            * (BITS_PER_SAMPLE as usize / 8)
+            * options.local_window_seconds as usize;
+        let mut rolling_audio = VecDeque::<Vec<u8>>::new();
+        let mut rolling_bytes = 0_usize;
+        let mut previous_window_transcript: Option<String> = None;
         loop {
             let pcm = tokio::select! {
                 result = audio.recv() => match result {
@@ -363,24 +400,63 @@ fn transcribe_audio(
                 }
             };
             let Some(pcm) = pcm else { break };
-            if silence_threshold > 0 && pcm_level(&pcm) < silence_threshold {
+            let silent =
+                options.silence_threshold > 0 && pcm_level(&pcm) < options.silence_threshold;
+            if matches!(&backend, Transcription::Local(_)) {
+                rolling_bytes += pcm.len();
+                rolling_audio.push_back(pcm.clone());
+                while rolling_bytes > local_window_bytes {
+                    let Some(oldest) = rolling_audio.pop_front() else {
+                        break;
+                    };
+                    rolling_bytes = rolling_bytes.saturating_sub(oldest.len());
+                }
+            }
+            if silent {
+                previous_window_transcript = None;
                 continue;
             }
             let transcribed = match &backend {
                 Transcription::Local(transcriber) => {
+                    if rolling_bytes < local_window_bytes {
+                        continue;
+                    }
+                    let pcm: Vec<u8> = rolling_audio
+                        .iter()
+                        .flat_map(|chunk| chunk.iter().copied())
+                        .collect();
                     let transcriber = Arc::clone(transcriber);
-                    let language = language.clone();
+                    let language = options.language.clone();
                     tokio::task::spawn_blocking(move || transcriber.transcribe(&pcm, &language))
                         .await
                         .unwrap_or_else(|err| Err(anyhow::anyhow!("whisper task failed: {err}")))
                 }
                 Transcription::Remote { provider } => {
-                    transcribe(provider, &model, &language, pcm_to_wav(&pcm)).await
+                    transcribe(
+                        provider,
+                        &options.model,
+                        &options.language,
+                        pcm_to_wav(&pcm),
+                    )
+                    .await
                 }
             };
             match transcribed {
                 Ok(text) if !text.trim().is_empty() => {
-                    let text = text.trim().to_string();
+                    let raw = text.trim().to_string();
+                    let text = if matches!(&backend, Transcription::Local(_)) {
+                        let novel = previous_window_transcript.as_deref().map_or_else(
+                            || raw.clone(),
+                            |previous| whisper::novel_transcript(previous, &raw),
+                        );
+                        previous_window_transcript = Some(raw);
+                        novel
+                    } else {
+                        raw
+                    };
+                    if text.is_empty() {
+                        continue;
+                    }
                     let _ = events.send(SessionEvent::Transcript(text.clone())).await;
                     if tx.send(text).await.is_err() {
                         break;
@@ -589,7 +665,7 @@ fn coaching_prompt(
         goals.push("capture decisions, facts, questions, and action items as compact notes");
     }
     let mut prompt = format!(
-        "You are coaching a conversation as it happens. {}. Separate sections with short labels. Be concise, do not repeat the transcript, and explicitly mark uncertainty. Use the attached screen only when relevant.\n\nRecent transcript:\n{transcript}",
+        "You are coaching a conversation as it happens. {}.\n\nEvidence rules:\n- Use only information explicitly present in the transcript or attached screen.\n- A question is not a fact or decision. Keep it as an open question.\n- Do not infer identities, relationships, business domain, intent, policies, location, logistics, costs, approvals, or prior statements.\n- Never turn a suggested reply into a fact, decision, or note.\n- If the fragment does not support useful grounded coaching, output only: Wait for more context.\n\nOtherwise, separate enabled sections with short labels, stay concise, and explicitly mark uncertainty. Do not repeat the transcript. Use the attached screen only when relevant.\n\nRecent transcript:\n{transcript}",
         goals.join("; ")
     );
     if let Some(description) = screen_description {
@@ -611,6 +687,14 @@ fn recent_transcript(chunks: &[String], max_chars: usize) -> String {
     }
     selected.reverse();
     selected.join("\n")
+}
+
+fn session_summary_prompt(notes: &[String], transcript: &[String]) -> String {
+    format!(
+        "Summarize this session using the grounding rules below.\n- The transcript is the source of truth.\n- Generated notes are untrusted model suggestions, not evidence. Include a note only when the transcript independently supports it.\n- A question is not a decision. A proposed reply is not something a participant actually said.\n- If notes conflict with or go beyond the transcript, discard them.\n- Do not infer identities, intent, domain, policies, location, costs, owners, or action items.\n\nInclude only supported decisions, key points, objections, open questions, and action items with owners when explicitly stated. Say when the available transcript is insufficient.\n\nGenerated rolling notes (untrusted):\n{}\n\nRecent transcript (source of truth):\n{}",
+        recent_transcript(notes, 20_000),
+        recent_transcript(transcript, 40_000),
+    )
 }
 
 fn pcm_to_wav(pcm: &[u8]) -> Vec<u8> {
@@ -740,5 +824,30 @@ mod tests {
             .collect();
         assert_eq!(pcm_level(&pcm), 200);
         assert_eq!(pcm_level(&[]), 0);
+    }
+
+    #[test]
+    fn coaching_prompt_treats_questions_as_questions_not_decisions() {
+        let prompt = coaching_prompt(
+            &MeetingConfig::default(),
+            "E para os caras ficarem no Brasil?",
+            None,
+        );
+
+        assert!(prompt.contains("A question is not a fact or decision"));
+        assert!(prompt.contains("Do not infer"));
+        assert!(prompt.contains("Wait for more context"));
+    }
+
+    #[test]
+    fn summary_uses_transcript_as_truth_not_generated_notes() {
+        let prompt = session_summary_prompt(
+            &["Decision: the team is in Brazil".into()],
+            &["E para os caras ficarem no Brasil?".into()],
+        );
+
+        assert!(prompt.contains("The transcript is the source of truth"));
+        assert!(prompt.contains("Generated notes are untrusted"));
+        assert!(prompt.contains("A question is not a decision"));
     }
 }
