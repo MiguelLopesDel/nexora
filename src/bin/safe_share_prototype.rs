@@ -31,23 +31,93 @@ fn main() -> ExitCode {
     }
 
     match state.compositor.as_str() {
-        "hyprland" => run_hyprland_probe(),
-        "niri" => {
-            println!("\nVERDICT: runtime gate not met on niri.");
-            println!(
-                "niri does not expose an unprivileged command for creating a headless output."
-            );
-            println!(
-                "The next prototype must supply a compositor-independent output (for example,"
-            );
-            println!("a dedicated nested runtime) before portal and interaction tests can run.");
-            ExitCode::from(2)
+        "hyprland" | "niri" => {
+            println!("\nTwo probes are available:");
+            println!("  nested runtime — the clean scene runs inside a nested compositor");
+            println!("  shown as a normal window; no host output hotplug, native input.");
+            println!("  headless output — Hyprland only; hotplugs a virtual monitor into");
+            println!("  the session, which is known to break some desktop shells.");
+            if confirm("Run the NESTED-RUNTIME probe (recommended)? [y/N] ") {
+                return run_nested_probe();
+            }
+            if state.compositor == "hyprland" {
+                run_hyprland_probe()
+            } else {
+                println!("\nVERDICT: the headless-output path is unavailable on niri;");
+                println!("rerun and choose the nested-runtime probe.");
+                ExitCode::from(2)
+            }
         }
         _ => {
             println!("\nVERDICT: run this inside a Hyprland or niri Wayland session.");
             ExitCode::from(2)
         }
     }
+}
+
+fn run_nested_probe() -> ExitCode {
+    let Some(runtime) = ["cage", "gamescope"]
+        .into_iter()
+        .find(|runtime| command_exists(runtime))
+    else {
+        println!("\nVERDICT: no nested runtime found. Install cage (or gamescope) and rerun.");
+        return ExitCode::from(2);
+    };
+    let Ok(exe) = env::current_exe() else {
+        eprintln!("cannot locate the current executable.");
+        return ExitCode::from(2);
+    };
+
+    if !confirm(&format!(
+        "Launch a nested {runtime} runtime showing the clean marker now? [y/N] "
+    )) {
+        println!("No changes made.");
+        return ExitCode::SUCCESS;
+    }
+
+    let child = match runtime {
+        "cage" => Command::new("cage")
+            .arg("--")
+            .arg(&exe)
+            .arg(MARKER_ARG)
+            .spawn(),
+        _ => Command::new("gamescope")
+            .arg("--")
+            .arg(&exe)
+            .arg(MARKER_ARG)
+            .spawn(),
+    };
+    let child = match child {
+        Ok(child) => child,
+        Err(error) => {
+            eprintln!("failed to start {runtime}: {error}");
+            return ExitCode::from(2);
+        }
+    };
+
+    println!("\nSTATE AFTER LAUNCH");
+    println!("  nested_runtime: {runtime}");
+    println!("  host_output_hotplug: none");
+
+    println!("\nLIVE CHECK");
+    println!("  1. The nested runtime appears as a normal window on your desktop.");
+    println!("  2. In Discord/OBS/browser pick WINDOW sharing and select that window.");
+    println!("  3. Confirm the marker is transmitted and Nexora is absent — drag the");
+    println!("     Nexora overlay over the nested window; a window share must not");
+    println!("     include it or show any black redaction.");
+    println!("  4. Click the text field and type directly: input is native, no VNC.");
+    println!("  5. Keep one stream live, then press Enter here to close the runtime;");
+    println!("     note what the viewer sees when the shared window disappears.");
+
+    let mut ignored = String::new();
+    let _ = io::stdin().read_line(&mut ignored);
+    stop_preview(vec![child]);
+
+    println!("\nFINAL STATE");
+    println!("  nested_runtime_stopped: yes");
+    println!("  verdict: window-picker selection, clean pixels, native input, and");
+    println!("           teardown behavior can all be judged from this run.");
+    ExitCode::SUCCESS
 }
 
 struct State {
@@ -95,6 +165,8 @@ impl State {
                 "gdbus",
                 "hyprctl",
                 "niri",
+                "cage",
+                "gamescope",
                 "wl-mirror",
                 "wayvnc",
                 "vncviewer",
@@ -343,12 +415,21 @@ fn run_marker() -> ExitCode {
             "NEXORA SAFE SHARE\nCLEAN VIRTUAL WORKSPACE\n\nThe Nexora overlay must not appear here.",
         ));
         label.add_css_class("title-1");
+        let entry = gtk4::Entry::builder()
+            .placeholder_text("Type here to prove keyboard input reaches the clean scene")
+            .width_chars(48)
+            .build();
+        let column = gtk4::Box::new(gtk4::Orientation::Vertical, 24);
+        column.set_valign(gtk4::Align::Center);
+        column.set_halign(gtk4::Align::Center);
+        column.append(&label);
+        column.append(&entry);
         let window = gtk4::ApplicationWindow::builder()
             .application(app)
             .title("Nexora Safe Share Prototype Marker")
             .default_width(1200)
             .default_height(700)
-            .child(&label)
+            .child(&column)
             .build();
         window.fullscreen();
         window.present();

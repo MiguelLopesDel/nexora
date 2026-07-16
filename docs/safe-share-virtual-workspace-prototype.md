@@ -11,7 +11,26 @@ cargo run --bin safe_share_prototype
 ```
 
 The probe prints compositor, portal, tool, and output state before making any
-change. On Hyprland it can create a temporary `NEXORA-SAFE-SHARE` headless output,
+change, then offers two probes.
+
+## Nested-runtime probe (recommended)
+
+Repeated live runs showed that hotplugging any output into the host session
+breaks quickshell-based desktop shells every time, regardless of geometry or
+focus handling. The nested-runtime probe avoids the hotplug class entirely:
+a nested compositor (`cage`, falling back to `gamescope`) runs the clean
+marker — including a text field — and appears as a **normal window** on the
+desktop. Meeting applications share it through their ordinary *window*
+picker, the window itself is the local preview, and pointer/keyboard input is
+native, with no VNC and no new output. This is also the only viable path on
+niri. Its pass criteria: the window share transmits the marker with no Nexora
+surfaces and no black redaction even when Nexora overlaps the window locally;
+typing into the marker's text field works directly; closing the runtime ends
+cleanly and the viewer-side behavior at teardown is recorded.
+
+## Headless-output probe (Hyprland only)
+
+On Hyprland the probe can create a temporary `NEXORA-SAFE-SHARE` headless output,
 place a full-screen marker on it, and keep the output alive while the operator
 selects it in OBS, a browser meeting, or Discord. Pressing Enter removes the marker
 and output. A later run also removes a stale prototype output left by a crash.
