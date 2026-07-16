@@ -108,6 +108,7 @@ pub struct Overlay {
     // Chat view.
     entry: gtk::Entry,
     attach: gtk::ToggleButton,
+    explain: gtk::Button,
     meeting_button: gtk::ToggleButton,
     response: gtk::TextView,
     end_mark: gtk::TextMark,
@@ -115,6 +116,9 @@ pub struct Overlay {
     conversation: RefCell<Conversation>,
     busy: Cell<bool>,
     meeting_stop: RefCell<Option<tokio::sync::watch::Sender<bool>>>,
+    // Live transcript of the active meeting, so a typed question can use it
+    // as context. Cleared when a session starts.
+    meeting_transcript: RefCell<Vec<String>>,
     // Settings view.
     settings: RefCell<Option<SettingsWidgets>>,
 }
@@ -181,9 +185,14 @@ impl Overlay {
         let input_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         let attach = gtk::ToggleButton::builder()
             .label("📷")
-            .tooltip_text("Attach a screenshot of your screen")
+            .tooltip_text("Attach a screenshot of your screen to your next question")
             .build();
         attach.add_css_class("nexora-attach");
+        let explain = gtk::Button::builder()
+            .label("🖥")
+            .tooltip_text("Explain what is on my screen right now")
+            .build();
+        explain.add_css_class("nexora-attach");
         let meeting_button = gtk::ToggleButton::builder()
             .label("🎙")
             .tooltip_text("Start live meeting assistant")
@@ -195,6 +204,7 @@ impl Overlay {
             .build();
         entry.add_css_class("nexora-entry");
         input_row.append(&meeting_button);
+        input_row.append(&explain);
         input_row.append(&attach);
         input_row.append(&entry);
 
@@ -228,6 +238,7 @@ impl Overlay {
             gear,
             entry,
             attach,
+            explain,
             meeting_button,
             response,
             end_mark,
@@ -235,6 +246,7 @@ impl Overlay {
             conversation: RefCell::new(conversation),
             busy: Cell::new(false),
             meeting_stop: RefCell::new(None),
+            meeting_transcript: RefCell::new(Vec::new()),
             settings: RefCell::new(None),
         });
 
@@ -254,6 +266,19 @@ impl Overlay {
             }
             entry.set_text("");
             this.ask(prompt, this.attach.is_active(), "ask".to_string());
+        });
+
+        // Explain-screen button: capture the screen and ask about it, no CLI.
+        let this = Rc::clone(self);
+        self.explain.connect_clicked(move |_| {
+            let prompt = Config::load()
+                .ok()
+                .and_then(|config| config.preset("explain-screen").ok())
+                .map(|preset| preset.prompt)
+                .unwrap_or_else(|| {
+                    "Explain what is on my screen. Focus on unusual terms, errors, and anything I would want clarified.".to_string()
+                });
+            this.ask(prompt, true, "explain-screen".to_string());
         });
 
         // Gear toggles the settings page.
@@ -409,6 +434,7 @@ impl Overlay {
         self.gear.set_active(false);
         self.show_meeting_line("Session", "Live assistant started", "meeting");
 
+        self.meeting_transcript.borrow_mut().clear();
         let (events_tx, events_rx) = async_channel::unbounded();
         let (stop_tx, stop_rx) = tokio::sync::watch::channel(true);
         *self.meeting_stop.borrow_mut() = Some(stop_tx);
@@ -449,6 +475,15 @@ impl Overlay {
         match event {
             SessionEvent::Status(text) => self.set_status(&text),
             SessionEvent::Transcript(text) => {
+                // Keep a bounded rolling transcript so a typed question can use
+                // it as context without growing without bound.
+                let mut transcript = self.meeting_transcript.borrow_mut();
+                transcript.push(text.clone());
+                if transcript.len() > 400 {
+                    let overflow = transcript.len() - 400;
+                    transcript.drain(..overflow);
+                }
+                drop(transcript);
                 self.show_meeting_line("Transcript", &text, "meeting")
             }
             SessionEvent::Translation(text) => {
@@ -575,6 +610,15 @@ impl Overlay {
         self.set_status(&format!("{} · {}", task.provider, task.model));
 
         let mut messages = self.conversation.borrow().api_messages();
+        // When a meeting is live, let a typed question use what is being said
+        // as context so the model understands the ongoing conversation.
+        if self.meeting_stop.borrow().is_some()
+            && let Some(context) = self.recent_meeting_transcript(6_000)
+            && let Some((_, text)) = messages.last_mut()
+        {
+            text.push_str("\n\nLive meeting transcript (most recent speech, for context):\n");
+            text.push_str(&context);
+        }
         if let Some(description) = screen_description
             && let Some((_, text)) = messages.last_mut()
         {
@@ -612,6 +656,25 @@ impl Overlay {
         drop(conversation);
         self.render_conversation();
         self.set_status("");
+    }
+
+    /// The tail of the live transcript, capped at `max_chars`.
+    fn recent_meeting_transcript(&self, max_chars: usize) -> Option<String> {
+        let transcript = self.meeting_transcript.borrow();
+        if transcript.is_empty() {
+            return None;
+        }
+        let mut selected = Vec::new();
+        let mut length = 0;
+        for chunk in transcript.iter().rev() {
+            if length + chunk.len() > max_chars && !selected.is_empty() {
+                break;
+            }
+            length += chunk.len();
+            selected.push(chunk.as_str());
+        }
+        selected.reverse();
+        Some(selected.join("\n"))
     }
 
     async fn capture_avoiding_self(&self) -> anyhow::Result<Vec<u8>> {

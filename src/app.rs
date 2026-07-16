@@ -28,6 +28,13 @@ pub fn run(forwarded: &[&str]) -> i32 {
         .build();
 
     app.connect_startup(|app| {
+        // Install the desktop entry so xdg-desktop-portal attributes screenshot
+        // and other portal requests to "Nexora" instead of the launching
+        // terminal. Best-effort and idempotent.
+        if let Err(err) = install_desktop_entry() {
+            eprintln!("nexora: could not install desktop entry: {err:#}");
+        }
+
         let provider = gtk::CssProvider::new();
         provider.load_from_data(ui::STYLE);
         if let Some(display) = gtk4::gdk::Display::default() {
@@ -82,6 +89,23 @@ fn handle_command(app: &gtk::Application, args: &[&str]) -> u8 {
         }
     }
     0
+}
+
+/// Write `dev.nexora.Nexora.desktop` into the user's applications directory if
+/// it is missing or out of date. The portal reads this file to name and
+/// icon the app in permission dialogs.
+fn install_desktop_entry() -> std::io::Result<()> {
+    const ENTRY: &str = include_str!("../assets/dev.nexora.Nexora.desktop");
+    let Some(dir) = dirs::data_dir() else {
+        return Ok(());
+    };
+    let apps = dir.join("applications");
+    std::fs::create_dir_all(&apps)?;
+    let path = apps.join(concat!("dev.nexora.Nexora", ".desktop"));
+    if std::fs::read_to_string(&path).is_ok_and(|current| current == ENTRY) {
+        return Ok(());
+    }
+    std::fs::write(&path, ENTRY)
 }
 
 /// Get or lazily build the single overlay window (primary instance only).
