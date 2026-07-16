@@ -102,11 +102,25 @@ losing words at capture boundaries.
 
 Recording, translation, screen context, notes, summaries, and on-disk storage are independently configurable. Saved sessions go to `~/.local/share/nexora/sessions/`. Obtain consent before recording other people and review your provider's data-retention policy. Automatic screen context may capture sensitive information; it is off by default.
 
+Words the transcriber keeps getting wrong — slang, jargon, product or people
+names — can be fixed declaratively under `[meeting.corrections]` in
+`config.toml` (`"clod" = "Claude"`). Keys match whole words or word sequences,
+ignoring case, and apply before the text reaches the screen, the analysis
+model, notes, and summaries.
+
 ### Local Vision & OCR
 
 Open **Settings → Vision & OCR**, choose **Vision/OCR proxy**, select the Ollama provider and a curated model, then press **Download selected model**. `qwen3-vl:4b` is the recommended balance; 2B is faster on modest hardware, while 8B improves small-text OCR. Nexora uses Ollama's local `/api/tags`, `/api/pull`, and `/api/delete` endpoints, and sends images through its OpenAI-compatible vision endpoint.
 
 In proxy mode the local model receives the screenshot and returns only a compact description plus OCR. The main task model receives that text—not the image. Direct mode remains available for Claude, Gemini, OpenAI, local multimodal models, or any other provider that accepts images. The capture interval, provider, model, Ollama URL, and vision prompt are all configurable in the interface.
+
+### Local chat models
+
+The **Providers** settings page has the same manager for chat models: pick a
+curated Ollama model (or type any registry tag), download it with live
+progress, and point the `ollama` provider at it. Combined with local whisper
+and the vision proxy, the entire assistant — transcription, screen
+understanding, and answers — can run without any cloud API.
 
 ### Model capabilities
 
@@ -162,6 +176,27 @@ nexora config init     write a starter config
 nexora config path     print the config path
 nexora quit            stop the resident instance
 ```
+
+## Benchmarking transcription quality and latency
+
+`transcription_bench` (a developer binary) exercises the full live pipeline on
+an isolated PulseAudio null sink — nothing is played on your speakers and no
+real audio is mixed in. It synthesizes Portuguese and English fixtures
+(preferring realistic [piper](https://github.com/rhasspy/piper) voices over
+espeak-ng when installed under `~/.local/share/piper/voices/`), captures them
+back through `parec` exactly like the app, streams them through the same
+rolling-window whisper transcription and `[meeting.corrections]` pass, and
+prints the exact transcripts with word-error-rate and latency gates. It then
+asks a local Ollama model questions about what was "heard" ("what is X?",
+"what did the speaker mean?") and checks the answers:
+
+```sh
+cargo run --release --bin transcription_bench -- --model base
+cargo run --release --bin transcription_bench -- --help   # gates, models, QA options
+```
+
+Exit code 0 means every gate passed, 1 a quality/latency gate failed, and 2 an
+environment problem (missing tools, model not downloaded, Ollama offline).
 
 ## Roadmap
 
