@@ -36,6 +36,8 @@ enum Command {
         #[command(subcommand)]
         action: SessionAction,
     },
+    /// Run the local OpenAI-compatible intermediary (web search, compaction)
+    Relay,
     /// Quit the resident instance
     Quit,
     /// Anti-capture (screen-share hiding) helpers
@@ -83,6 +85,17 @@ fn main() -> std::process::ExitCode {
             println!("{}", hidden::status_report());
             return std::process::ExitCode::SUCCESS;
         }
+        Some(Command::Relay) => {
+            let result = config::Config::load()
+                .and_then(|config| nexora::runtime().block_on(nexora::relay::serve(config)));
+            return match result {
+                Ok(()) => std::process::ExitCode::SUCCESS,
+                Err(err) => {
+                    eprintln!("nexora relay: {err:#}");
+                    std::process::ExitCode::FAILURE
+                }
+            };
+        }
         Some(Command::Config { action }) => {
             let result = match action {
                 ConfigAction::Path => {
@@ -118,7 +131,9 @@ fn main() -> std::process::ExitCode {
         Some(Command::Session {
             action: SessionAction::Stop,
         }) => vec!["session", "stop"],
-        Some(Command::Hidden { .. }) | Some(Command::Config { .. }) => unreachable!(),
+        Some(Command::Hidden { .. }) | Some(Command::Config { .. }) | Some(Command::Relay) => {
+            unreachable!()
+        }
     };
     std::process::ExitCode::from(app::run(&forwarded) as u8)
 }

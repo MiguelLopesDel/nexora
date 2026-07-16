@@ -63,6 +63,33 @@ api_key = "ollama" # Ollama ignores the key but the field must be set
 default_model = "llama3.2"
 
 # ------------------------------------------------------------------
+# Relay — `nexora relay` runs a local OpenAI-compatible intermediary
+# that adds web search (with page reading), history compaction, and
+# prompt enrichment on top of providers whose APIs have none of it
+# server-side (DeepSeek, OpenRouter, Ollama, …). Point a provider at
+# it (see [providers.relay] below) and use that provider in tasks.
+# ------------------------------------------------------------------
+
+[relay]
+upstream = "ollama"       # key under [providers] requests are forwarded to
+port = 8787               # listens on 127.0.0.1 only
+# "auto" prefers searxng when its URL is set, then Brave when its key env is
+# set, then DuckDuckGo (no key, may be rate-limited on some networks).
+search = "auto"
+searxng_url = ""          # e.g. "http://localhost:8888" (recommended, local)
+brave_api_key_env = "BRAVE_API_KEY"
+max_search_rounds = 3     # search tool rounds allowed per question
+max_results = 5           # hits handed to the model per query
+fetch_pages = true        # also read the top result and extract its text
+compact_over_chars = 24000 # summarize older turns beyond this budget
+
+[providers.relay]
+kind = "openai"
+base_url = "http://127.0.0.1:8787/v1"
+api_key = "local"         # the relay ignores it, but the field must be set
+default_model = "relay"   # "relay" forwards to the upstream default model
+
+# ------------------------------------------------------------------
 # Tasks — pick a provider+model per job. "ask" is the default task.
 # ------------------------------------------------------------------
 

@@ -117,6 +117,30 @@ Open **Settings → Vision & OCR**, choose **Vision/OCR proxy**, select the Olla
 
 In proxy mode the local model receives the screenshot and returns only a compact description plus OCR. The main task model receives that text—not the image. Direct mode remains available for Claude, Gemini, OpenAI, local multimodal models, or any other provider that accepts images. The capture interval, provider, model, Ollama URL, and vision prompt are all configurable in the interface.
 
+### Relay: web search and compaction for any provider
+
+Anthropic and OpenAI offer hosted web search, but DeepSeek, OpenRouter,
+Ollama, and most OpenAI-compatible APIs do not: with them the application
+must supply the tools. `nexora relay` is that intermediary — a local
+OpenAI-compatible server that sits between any client and the upstream
+provider and extracts more from the same model:
+
+- **Web search**: the model gets a `web_search` tool; the relay executes it
+  (SearxNG locally, Brave with an API key, or keyless DuckDuckGo), reads the
+  top result, and hands back titles, URLs, snippets, and page text, so
+  answers about recent or niche facts come with sources instead of guesses.
+- **History compaction**: once a conversation outgrows a configured budget,
+  older turns are summarized (and cached) so long chats keep fitting the
+  model's context window without losing decisions, names, or numbers.
+- **Prompt enrichment**: the current date and tool guidance are injected so
+  models know when to search and when to answer directly.
+
+Configure `[relay]` in `config.toml`, run `nexora relay`, and point any
+provider at `http://127.0.0.1:8787/v1` (see `[providers.relay]` in the
+example config). It works for Nexora itself and for any other
+OpenAI-compatible client on the machine. Requests never leave localhost
+except toward the configured upstream and search backend.
+
 ### Local chat models
 
 The **Providers** settings page has the same manager for chat models: pick a
@@ -209,6 +233,7 @@ environment problem (missing tools, model not downloaded, Ollama offline).
 - [x] Local Vision/OCR proxy with curated Ollama downloads
 - [x] Local whisper.cpp transcription backend (default, with curated model downloads)
 - [x] GPU acceleration for local transcription (Vulkan default; CUDA/ROCm builds available)
+- [x] Local relay with web search, page reading, and history compaction for tool-less providers
 - [ ] GlobalShortcuts portal support (keybinds without touching compositor config)
 - [x] Opt-in periodic screen understanding with configurable capture interval
 - [ ] Prebuilt packages (.deb / .rpm / AUR)

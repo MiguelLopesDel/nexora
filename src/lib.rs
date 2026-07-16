@@ -8,6 +8,7 @@ pub mod conversation;
 pub mod hidden;
 pub mod meeting;
 pub mod providers;
+pub mod relay;
 pub mod screenshot;
 pub mod ui;
 pub mod vision;

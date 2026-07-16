@@ -25,6 +25,83 @@ pub struct Config {
     pub vision: VisionConfig,
     #[serde(default)]
     pub profiles: HashMap<String, AssistantProfile>,
+    #[serde(default)]
+    pub relay: RelayConfig,
+}
+
+/// Settings for `nexora relay`: a local OpenAI-compatible intermediary that
+/// adds web search, page reading, and history compaction on top of providers
+/// that have none of it server-side (DeepSeek, OpenRouter, Ollama, …).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RelayConfig {
+    /// Provider key under [providers] the relay forwards requests to.
+    #[serde(default = "default_relay_upstream")]
+    pub upstream: String,
+    /// Listen port on 127.0.0.1. Point a provider at http://127.0.0.1:<port>/v1.
+    #[serde(default = "default_relay_port")]
+    pub port: u16,
+    /// "auto" picks searxng when its URL is set, then brave when its key is
+    /// set, then duckduckgo. Or force: "searxng", "duckduckgo", "brave", "off".
+    #[serde(default = "default_relay_search")]
+    pub search: String,
+    /// Base URL of a SearxNG instance (JSON API), e.g. http://localhost:8888.
+    #[serde(default)]
+    pub searxng_url: String,
+    /// Environment variable holding a Brave Search API key.
+    #[serde(default = "default_brave_key_env")]
+    pub brave_api_key_env: String,
+    /// Maximum search tool rounds per question.
+    #[serde(default = "default_search_rounds")]
+    pub max_search_rounds: u32,
+    /// Search hits handed to the model per query.
+    #[serde(default = "default_search_results")]
+    pub max_results: usize,
+    /// Also fetch the top result and hand the model its extracted text.
+    #[serde(default = "default_true")]
+    pub fetch_pages: bool,
+    /// Summarize older turns once the conversation exceeds this many
+    /// characters, so long chats keep fitting the upstream context.
+    #[serde(default = "default_compact_over_chars")]
+    pub compact_over_chars: usize,
+}
+
+impl Default for RelayConfig {
+    fn default() -> Self {
+        Self {
+            upstream: default_relay_upstream(),
+            port: default_relay_port(),
+            search: default_relay_search(),
+            searxng_url: String::new(),
+            brave_api_key_env: default_brave_key_env(),
+            max_search_rounds: default_search_rounds(),
+            max_results: default_search_results(),
+            fetch_pages: true,
+            compact_over_chars: default_compact_over_chars(),
+        }
+    }
+}
+
+fn default_relay_upstream() -> String {
+    "ollama".into()
+}
+fn default_relay_port() -> u16 {
+    8787
+}
+fn default_relay_search() -> String {
+    "auto".into()
+}
+fn default_brave_key_env() -> String {
+    "BRAVE_API_KEY".into()
+}
+fn default_search_rounds() -> u32 {
+    3
+}
+fn default_search_results() -> usize {
+    5
+}
+fn default_compact_over_chars() -> usize {
+    24_000
 }
 
 #[derive(Debug, Clone, Deserialize)]

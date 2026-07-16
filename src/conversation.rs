@@ -143,6 +143,17 @@ fn new_id() -> String {
     )
 }
 
+/// Today's UTC date as `YYYY-MM-DD`, without pulling in a datetime crate.
+pub fn utc_date_string() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let (year, month, day) = civil_from_days((secs / 86_400) as i64);
+    format!("{year:04}-{month:02}-{day:02}")
+}
+
 /// Days since 1970-01-01 → (year, month, day). Howard Hinnant's algorithm.
 fn civil_from_days(z: i64) -> (i64, u32, u32) {
     let z = z + 719_468;
