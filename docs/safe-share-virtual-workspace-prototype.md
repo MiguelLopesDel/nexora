@@ -21,6 +21,20 @@ unprivileged native command for creating a headless output. That negative result
 part of the prototype: a cross-compositor design needs a dedicated nested runtime
 or another independently supplied virtual display.
 
+If `wayvnc` is installed, the probe also offers a local interactive preview:
+wayvnc attaches to the virtual output on loopback (`127.0.0.1:5999`, no auth,
+throwaway), a terminal is launched on the shared workspace, and a VNC viewer
+(`vncviewer` or `wlvncc`) opens automatically when available. Typing into that
+terminal through the preview proves pointer and keyboard forwarding — plain
+output mirroring never does. The preview is killed during teardown, before the
+output is removed.
+
+Note two teardown behaviors observed on Hyprland: windows left on the shared
+workspace jump to the physical monitor when the output is removed, and a
+consumer that is already streaming the output does not necessarily stop when
+the output disappears. Teardown in a real design must close or verify consumer
+sessions instead of relying on output removal alone.
+
 ## Pass criteria
 
 - The virtual output is selectable through the normal portal picker.

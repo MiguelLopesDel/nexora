@@ -7,12 +7,13 @@ use gtk4::prelude::*;
 use std::env;
 use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
-use std::process::{Command, ExitCode};
+use std::process::{Child, Command, ExitCode};
 use std::time::Duration;
 
 const OUTPUT: &str = "NEXORA-SAFE-SHARE";
 const WORKSPACE: &str = "99";
 const MARKER_ARG: &str = "--marker";
+const VNC_PORT: &str = "5999";
 
 fn main() -> ExitCode {
     if env::args().any(|arg| arg == MARKER_ARG) {
@@ -172,26 +173,103 @@ fn run_hyprland_probe() -> ExitCode {
         indent(&command_output("hyprctl", &["monitors", "all", "-j"]), 4)
     );
 
+    let preview = start_preview();
+
     println!("\nLIVE CHECK");
     println!("  1. Open OBS, a browser meeting, or Discord screen sharing.");
     println!("  2. Select the monitor named {OUTPUT}.");
     println!("  3. Confirm the colored marker is present and Nexora is absent.");
     println!("  4. Record several seconds while moving Nexora on the physical monitor.");
-    println!("  5. Return here and press Enter to tear the prototype down.");
-    println!("\nInteraction is NOT proven merely by viewing the headless output. A VNC or");
-    println!("portal RemoteDesktop preview must forward pointer and keyboard input.");
+    println!("  5. Keep one stream live through teardown and note what its viewer");
+    println!("     shows after the output disappears (frozen frame, black, or ended).");
+    println!("  6. Return here and press Enter to tear the prototype down.");
+    println!("\nInteraction is NOT proven merely by viewing the headless output; use the");
+    println!("wayvnc preview (or any input-forwarding preview) to test typing.");
 
     let mut ignored = String::new();
     let _ = io::stdin().read_line(&mut ignored);
+    stop_preview(preview);
     stop_marker();
     let removed = run("hyprctl", &["output", "remove", OUTPUT]);
 
     println!("\nFINAL STATE");
+    println!("  preview_stopped: yes");
     println!("  marker_stopped: yes");
     println!("  output_removed: {removed}");
     println!("  verdict: capture selection can be judged from the recording;");
     println!("           local interaction remains a separate required gate.");
     ExitCode::SUCCESS
+}
+
+fn start_preview() -> Vec<Child> {
+    if !command_exists("wayvnc") {
+        println!("\nINTERACTION PROBE skipped: wayvnc is not installed.");
+        println!("Install wayvnc plus a VNC viewer and rerun to test input forwarding.");
+        return Vec::new();
+    }
+    if !confirm("Start the local interactive preview (wayvnc on 127.0.0.1)? [y/N] ") {
+        return Vec::new();
+    }
+
+    let mut children = Vec::new();
+    match Command::new("wayvnc")
+        .args(["--output", OUTPUT, "127.0.0.1", VNC_PORT])
+        .spawn()
+    {
+        Ok(child) => children.push(child),
+        Err(error) => {
+            println!("failed to start wayvnc: {error}");
+            return children;
+        }
+    }
+    std::thread::sleep(Duration::from_millis(750));
+
+    println!("\nINTERACTION PROBE");
+    println!("  wayvnc: 127.0.0.1:{VNC_PORT} (no auth, loopback only, throwaway)");
+
+    let terminal = ["foot", "kitty", "alacritty", "wezterm", "xterm"]
+        .into_iter()
+        .find(|terminal| command_exists(terminal));
+    match terminal {
+        Some(terminal) => {
+            let command = format!("[workspace {WORKSPACE} silent] {terminal}");
+            let launched = run("hyprctl", &["dispatch", "exec", &command]);
+            println!("  terminal_on_shared_workspace: {terminal} (started: {launched})");
+        }
+        None => {
+            println!("  no known terminal found; move any window there with:");
+            println!("    hyprctl dispatch movetoworkspacesilent {WORKSPACE}");
+        }
+    }
+
+    if command_exists("vncviewer") {
+        if let Ok(child) = Command::new("vncviewer")
+            .arg(format!("127.0.0.1::{VNC_PORT}"))
+            .spawn()
+        {
+            children.push(child);
+        }
+    } else if command_exists("wlvncc") {
+        if let Ok(child) = Command::new("wlvncc").args(["127.0.0.1", VNC_PORT]).spawn() {
+            children.push(child);
+        }
+    } else {
+        println!("  no VNC viewer found; connect one to 127.0.0.1:{VNC_PORT} manually.");
+    }
+
+    println!("  Click the terminal inside the preview and type. Input forwarding is");
+    println!("  proven only if keystrokes land in the terminal on {OUTPUT}.");
+    println!("  Close apps from inside the preview before teardown; leftover windows");
+    println!("  jump to the physical monitor when the output is removed.");
+    children
+}
+
+fn stop_preview(children: Vec<Child>) {
+    // Kill in reverse spawn order so the viewer dies before the wayvnc server.
+    for mut child in children.into_iter().rev() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
 }
 
 fn start_hyprland_marker() -> bool {
