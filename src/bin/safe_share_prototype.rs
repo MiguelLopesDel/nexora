@@ -14,9 +14,6 @@ const OUTPUT: &str = "NEXORA-SAFE-SHARE";
 const WORKSPACE: &str = "99";
 const MARKER_ARG: &str = "--marker";
 const VNC_PORT: &str = "5999";
-// Far from any plausible physical layout, with no shared edge: the cursor
-// cannot wander onto the shared output and windows cannot be dragged across.
-const OUTPUT_POSITION: &str = "20000x0";
 
 fn main() -> ExitCode {
     if env::args().any(|arg| arg == MARKER_ARG) {
@@ -146,17 +143,22 @@ fn run_hyprland_probe() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
+    // Creating a monitor steals focus and warps the cursor onto the invisible
+    // output, stranding the user; remember where they were to focus back.
+    let focused = focused_monitor();
+
     if !run("hyprctl", &["output", "create", "headless", OUTPUT]) {
         eprintln!("VERDICT: Hyprland rejected headless-output creation.");
         return ExitCode::from(2);
     }
 
+    let position = isolated_position();
     let configured = run(
         "hyprctl",
         &[
             "keyword",
             "monitor",
-            &format!("{OUTPUT},1920x1080@60,{OUTPUT_POSITION},1"),
+            &format!("{OUTPUT},1920x1080@60,{position},1"),
         ],
     );
     let marker_started = start_hyprland_marker();
@@ -165,12 +167,17 @@ fn run_hyprland_probe() -> ExitCode {
         "hyprctl",
         &["dispatch", "moveworkspacetomonitor", WORKSPACE, OUTPUT],
     );
+    let refocused = focused
+        .as_deref()
+        .is_some_and(|name| run("hyprctl", &["dispatch", "focusmonitor", name]));
 
     println!("\nSTATE AFTER CREATE");
     println!("  output_created: yes");
+    println!("  output_position: {position}");
     println!("  output_configured: {configured}");
     println!("  workspace_assigned: {workspace_moved}");
     println!("  clean_marker_started: {marker_started}");
+    println!("  focus_restored_to_physical_monitor: {refocused}");
     println!(
         "  outputs:\n{}",
         indent(&command_output("hyprctl", &["monitors", "all", "-j"]), 4)
@@ -202,6 +209,38 @@ fn run_hyprland_probe() -> ExitCode {
     println!("  verdict: capture selection can be judged from the recording;");
     println!("           local interaction remains a separate required gate.");
     ExitCode::SUCCESS
+}
+
+fn focused_monitor() -> Option<String> {
+    let monitors: serde_json::Value =
+        serde_json::from_str(&command_output("hyprctl", &["monitors", "-j"])).ok()?;
+    monitors
+        .as_array()?
+        .iter()
+        .find(|monitor| monitor["focused"].as_bool() == Some(true))
+        .and_then(|monitor| monitor["name"].as_str())
+        .map(str::to_owned)
+}
+
+/// A position past every existing monitor with a small gap. The gap breaks
+/// edge adjacency — the cursor cannot wander onto the shared output and
+/// windows cannot be dragged across — while the overall layout bounding box
+/// stays small for shell components that react to output geometry.
+fn isolated_position() -> String {
+    let right_edge = serde_json::from_str::<serde_json::Value>(&command_output(
+        "hyprctl",
+        &["monitors", "all", "-j"],
+    ))
+    .ok()
+    .and_then(|monitors| {
+        monitors
+            .as_array()?
+            .iter()
+            .filter_map(|monitor| Some(monitor["x"].as_i64()? + monitor["width"].as_i64()?))
+            .max()
+    })
+    .unwrap_or(3840);
+    format!("{}x0", right_edge + 256)
 }
 
 fn start_preview() -> Vec<Child> {
@@ -262,8 +301,8 @@ fn start_preview() -> Vec<Child> {
 
     println!("  Click the terminal inside the preview and type. Input forwarding is");
     println!("  proven only if keystrokes land in the terminal on {OUTPUT}.");
-    println!("  The shared output sits at {OUTPUT_POSITION} with no shared edge: the");
-    println!("  cursor and window drags cannot cross outputs, so use the preview.");
+    println!("  The shared output sits past the physical layout with no shared edge:");
+    println!("  the cursor and window drags cannot cross outputs, so use the preview.");
     println!("  Compositor keybinds (workspace switching, focus) act on the real");
     println!("  session and are never forwarded into the preview.");
     println!("  Close apps from inside the preview before teardown; leftover windows");
