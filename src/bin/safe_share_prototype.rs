@@ -138,6 +138,11 @@ fn run_hyprland_probe() -> ExitCode {
         let _ = run("hyprctl", &["output", "remove", OUTPUT]);
     }
 
+    println!("\nWARNING: creating or removing an output is a session-wide hotplug event.");
+    println!("Desktop shells are known to crash or lose surfaces when outputs appear");
+    println!("(quickshell-based shells hit a known Qt hotplug bug). Keep a terminal");
+    println!("ready to restart your shell, e.g. `qs -c <config>`.");
+
     if !confirm("Create a temporary 1920x1080 headless output now? [y/N] ") {
         println!("No changes made.");
         return ExitCode::SUCCESS;

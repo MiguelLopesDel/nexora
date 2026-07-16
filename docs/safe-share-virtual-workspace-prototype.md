@@ -41,10 +41,16 @@ into the preview.
 Creating a monitor also steals focus and warps the cursor onto the invisible
 output, which strands the user: workspace binds keep acting on the monitor
 they cannot see. The probe records the focused monitor before creating the
-output and focuses it back immediately after setup. A live run additionally
-saw a quickshell-based desktop shell disappear when the output appeared;
-third-party shells reacting to output hotplug are a real compatibility risk
-that the product design must test for explicitly.
+output and focuses it back immediately after setup. Live runs additionally
+saw a quickshell-based desktop shell disappear whenever the output appeared —
+with both huge and minimal layout bounding boxes, so the hotplug event itself
+is the trigger (upstream quickshell documents a Qt monitor-hotplug crash bug
+and shells are recreated reactively when the screen list changes). The shell
+did not return when the output was removed and had to be restarted manually.
+Third-party shells reacting to output hotplug are a real compatibility risk
+that the product design must test for explicitly; it also strengthens the
+case for a nested-runtime design that never hotplugs an output into the host
+session.
 
 Note two teardown behaviors observed on Hyprland: windows left on the shared
 workspace jump to the physical monitor when the output is removed, and a
