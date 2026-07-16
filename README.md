@@ -47,18 +47,18 @@ On Hyprland the rule keyword and syntax changed across versions. Nexora tries cu
 ### Dependencies
 
 - GTK 4 ≥ 4.10, gtk4-layer-shell, `xdg-desktop-portal`, and `parec` (PulseAudio utilities; it also works with PipeWire's Pulse compatibility layer).
-- Building needs a C/C++ toolchain and CMake (the local whisper.cpp transcription engine is compiled in).
+- Building needs a C/C++ toolchain, CMake, and libclang (the local whisper.cpp transcription engine is compiled in and its bindings are generated with bindgen).
 - Optional: [Ollama](https://ollama.com/) for downloadable local Vision & OCR models.
 
 ```bash
 # Debian / Ubuntu
-sudo apt install libgtk-4-dev libgtk4-layer-shell-dev pulseaudio-utils cmake g++
+sudo apt install libgtk-4-dev libgtk4-layer-shell-dev pulseaudio-utils cmake g++ libclang-dev
 
 # Fedora
-sudo dnf install gtk4-devel gtk4-layer-shell-devel pulseaudio-utils cmake gcc-c++
+sudo dnf install gtk4-devel gtk4-layer-shell-devel pulseaudio-utils cmake gcc-c++ clang-devel
 
 # Arch
-sudo pacman -S gtk4 gtk4-layer-shell libpulse cmake gcc
+sudo pacman -S gtk4 gtk4-layer-shell libpulse cmake gcc clang
 ```
 
 ### Build
