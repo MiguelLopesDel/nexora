@@ -1,6 +1,6 @@
 //! Configuration loading for ~/.config/nexora/config.toml.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
@@ -236,6 +236,11 @@ pub struct MeetingConfig {
     pub analysis_task: String,
     #[serde(default = "default_profile")]
     pub profile: String,
+    /// Post-transcription fixes for slang, jargon, and names the transcriber
+    /// keeps getting wrong. Keys match whole words (or word sequences)
+    /// ignoring case: `"clod" = "Claude"` never rewrites part of a word.
+    #[serde(default)]
+    pub corrections: BTreeMap<String, String>,
 }
 
 impl Default for MeetingConfig {
@@ -265,6 +270,7 @@ impl Default for MeetingConfig {
             save_session: true,
             analysis_task: default_task(),
             profile: default_profile(),
+            corrections: BTreeMap::new(),
         }
     }
 }

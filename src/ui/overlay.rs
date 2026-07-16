@@ -133,7 +133,9 @@ pub struct Overlay {
     settings: RefCell<Option<SettingsWidgets>>,
 }
 
-fn append_meeting_transcript_context(
+/// Attach live-meeting context to the outgoing question. Public so developer
+/// tools (src/bin/) can send questions in exactly the format the app uses.
+pub fn append_meeting_transcript_context(
     messages: &mut [(Role, String)],
     transcript: &[String],
     max_chars: usize,
@@ -1096,6 +1098,7 @@ impl Overlay {
         provider_page.append(&provider.cards);
         provider_page.append(&section_heading("Selected provider"));
         append_provider_fields(&provider_page, &provider);
+        append_local_chat_models(&provider_page, &config.vision.ollama_url);
         pages.add_titled(
             &settings_scroll(&provider_page),
             Some("providers"),
@@ -1610,148 +1613,7 @@ impl Overlay {
             .build();
         prompt.add_css_class("nexora-response");
         prompt.buffer().set_text(&settings.prompt);
-        let installed = gtk::DropDown::from_strings(&["Refresh to list installed models…"]);
-        installed.set_enable_search(true);
-        let refresh = gtk::Button::with_label("Refresh installed models");
-        refresh.add_css_class("nexora-attach");
-        let download = gtk::Button::with_label("Download selected model");
-        download.add_css_class("nexora-attach");
-        let delete = gtk::Button::with_label("Remove installed model");
-        delete.add_css_class("nexora-attach");
-        let progress = gtk::ProgressBar::new();
-        progress.set_show_text(true);
-        progress.set_visible(false);
-        let status = note_label(
-            "Ollama must be running. Downloads come from its registry and remain on this computer.",
-        );
-
-        let url_for_refresh = ollama_url.clone();
-        let installed_for_refresh = installed.clone();
-        let status_for_refresh = status.clone();
-        refresh.connect_clicked(move |_| {
-            status_for_refresh.set_text("Connecting to Ollama…");
-            let url = url_for_refresh.text().to_string();
-            let (tx, rx) = async_channel::bounded(1);
-            runtime().spawn(async move {
-                let _ = tx.send(vision::list_ollama_models(&url).await).await;
-            });
-            let dropdown = installed_for_refresh.clone();
-            let status = status_for_refresh.clone();
-            glib::spawn_future_local(async move {
-                match rx.recv().await {
-                    Ok(Ok(models)) => {
-                        let labels: Vec<String> = models
-                            .iter()
-                            .map(|model| {
-                                format!("{} · {}", model.name, vision::format_bytes(model.bytes))
-                            })
-                            .collect();
-                        let values: Vec<&str> = labels.iter().map(String::as_str).collect();
-                        dropdown.set_model(Some(&gtk::StringList::new(&values)));
-                        status.set_text(&format!("{} local models installed", models.len()));
-                    }
-                    Ok(Err(err)) => status.set_text(&format!("Ollama unavailable: {err:#}")),
-                    Err(_) => status.set_text("Ollama lookup was interrupted"),
-                }
-            });
-        });
-
-        let url_for_download = ollama_url.clone();
-        let model_for_download = model.clone();
-        let status_for_download = status.clone();
-        let progress_for_download = progress.clone();
-        let download_button = download.clone();
-        download.connect_clicked(move |_| {
-            let model = model_for_download.text().trim().to_string();
-            if model.is_empty() {
-                status_for_download.set_text("Select a model first");
-                return;
-            }
-            let url = url_for_download.text().to_string();
-            status_for_download.set_text(&format!("Downloading {model}…"));
-            progress_for_download.set_fraction(0.0);
-            progress_for_download.set_text(Some("Starting…"));
-            progress_for_download.set_visible(true);
-            download_button.set_sensitive(false);
-            let (progress_tx, progress_rx) = async_channel::unbounded();
-            let (done_tx, done_rx) = async_channel::bounded(1);
-            runtime().spawn(async move {
-                let result = vision::pull_ollama_model(&url, &model, progress_tx).await;
-                let _ = done_tx.send(result).await;
-            });
-            let status = status_for_download.clone();
-            let bar = progress_for_download.clone();
-            let button = download_button.clone();
-            glib::spawn_future_local(async move {
-                loop {
-                    while let Ok(update) = progress_rx.try_recv() {
-                        let text = match (update.completed, update.total) {
-                            (Some(done), Some(total)) if total > 0 => {
-                                bar.set_fraction(done as f64 / total as f64);
-                                format!(
-                                    "{} · {:.0}%",
-                                    update.status,
-                                    done as f64 * 100.0 / total as f64
-                                )
-                            }
-                            _ => update.status,
-                        };
-                        bar.set_text(Some(&text));
-                    }
-                    if let Ok(result) = done_rx.try_recv() {
-                        button.set_sensitive(true);
-                        match result {
-                            Ok(()) => {
-                                bar.set_fraction(1.0);
-                                bar.set_text(Some("Complete"));
-                                status.set_text(
-                                    "Model downloaded. Refresh the installed list to verify it.",
-                                );
-                            }
-                            Err(err) => {
-                                bar.set_visible(false);
-                                status.set_text(&format!("Download failed: {err:#}"));
-                            }
-                        }
-                        break;
-                    }
-                    glib::timeout_future(Duration::from_millis(100)).await;
-                }
-            });
-        });
-
-        let url_for_delete = ollama_url.clone();
-        let installed_for_delete = installed.clone();
-        let status_for_delete = status.clone();
-        delete.connect_clicked(move |_| {
-            let Some(label) = dropdown_text(&installed_for_delete) else {
-                status_for_delete.set_text("Refresh and select an installed model first");
-                return;
-            };
-            let Some(model) = label.split(" · ").next().map(str::to_string) else {
-                return;
-            };
-            if model.starts_with("Refresh ") {
-                status_for_delete.set_text("Refresh and select an installed model first");
-                return;
-            }
-            let url = url_for_delete.text().to_string();
-            status_for_delete.set_text(&format!("Removing {model}…"));
-            let (tx, rx) = async_channel::bounded(1);
-            runtime().spawn(async move {
-                let _ = tx
-                    .send(vision::delete_ollama_model(&url, &model).await)
-                    .await;
-            });
-            let status = status_for_delete.clone();
-            glib::spawn_future_local(async move {
-                match rx.recv().await {
-                    Ok(Ok(())) => status.set_text("Model removed"),
-                    Ok(Err(err)) => status.set_text(&format!("Remove failed: {err:#}")),
-                    Err(_) => status.set_text("Remove operation was interrupted"),
-                }
-            });
-        });
+        let library = ollama_library_controls(&ollama_url, &model);
 
         VisionSettingsWidgets {
             mode,
@@ -1760,12 +1622,12 @@ impl Overlay {
             catalog,
             ollama_url,
             prompt,
-            installed,
-            refresh,
-            download,
-            delete,
-            progress,
-            status,
+            installed: library.installed,
+            refresh: library.refresh,
+            download: library.download,
+            delete: library.delete,
+            progress: library.progress,
+            status: library.status,
         }
     }
 
@@ -1969,6 +1831,8 @@ impl Overlay {
             save_session: meeting_widgets.save_session.is_active(),
             analysis_task: meeting_widgets.analysis_task.text().trim().into(),
             profile: profile_name.clone(),
+            // Corrections are edited in config.toml; keep the loaded ones.
+            corrections: self.config.borrow().meeting.corrections.clone(),
         };
         let provider_thinking = match widgets.provider.thinking.selected() {
             1 => Some(true),
@@ -2526,6 +2390,247 @@ fn append_meeting_fields(page: &gtk::Box, meeting: &MeetingSettingsWidgets) {
     page.append(&note_label(
         "Token guide: local transcription uses no provider tokens. Remote transcription makes one request per non-empty audio chunk. Translation adds another request. Suggestions, objections and notes share one coaching request; enabling any of them activates it. Screen context adds image input to that request. Longer chunks reduce request frequency but increase delay.",
     ));
+}
+
+/// Curated Ollama chat models offered on the Providers page. Any registry
+/// tag can still be typed by hand; these are sane starting points per tier.
+const CHAT_MODEL_PRESETS: &[(&str, &str, &str, &str)] = &[
+    (
+        "llama3.2",
+        "2.0 GB",
+        "Light",
+        "Fast general chat on modest hardware",
+    ),
+    (
+        "qwen3:4b",
+        "2.6 GB",
+        "Light",
+        "Strong multilingual small model",
+    ),
+    (
+        "gemma4:e2b",
+        "6.7 GB",
+        "Balanced",
+        "Everyday assistant quality with modest memory needs",
+    ),
+    (
+        "deepseek-r1:8b",
+        "5.2 GB",
+        "Reasoning",
+        "Step-by-step reasoning, slower answers",
+    ),
+    (
+        "qwen3:14b",
+        "9.3 GB",
+        "Quality",
+        "Noticeably better answers, needs 16 GB+ RAM",
+    ),
+];
+
+/// A fully local chat stack: download a model from the Ollama registry and
+/// point the `ollama` provider at it. Lives on the Providers settings page.
+fn append_local_chat_models(page: &gtk::Box, initial_url: &str) {
+    page.append(&section_heading("Local chat models (Ollama)"));
+    page.append(&note_label(
+        "Download chat models straight from the Ollama registry and run them entirely on this computer. Pick a curated model or type any registry tag, download it, then set it as the `ollama` provider's default model above.",
+    ));
+    let labels: Vec<String> = CHAT_MODEL_PRESETS
+        .iter()
+        .map(|(id, download, size, description)| {
+            format!("{id} · {download} · {size} — {description}")
+        })
+        .collect();
+    let values: Vec<&str> = labels.iter().map(String::as_str).collect();
+    let catalog = gtk::DropDown::from_strings(&values);
+    catalog.set_enable_search(true);
+    let model = entry_with(CHAT_MODEL_PRESETS[0].0, "llama3.2");
+    let model_for_catalog = model.clone();
+    catalog.connect_selected_notify(move |dropdown| {
+        if let Some(item) = dropdown_text(dropdown)
+            && let Some(id) = item.split(" · ").next()
+        {
+            model_for_catalog.set_text(id);
+        }
+    });
+    let url = entry_with(initial_url, "http://localhost:11434");
+    let library = ollama_library_controls(&url, &model);
+    page.append(&field_row("Curated chat models", &catalog));
+    page.append(&field_row("Model tag", &model));
+    page.append(&field_row("Ollama URL", &url));
+    page.append(&field_row("Installed models", &library.installed));
+    let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    actions.append(&library.refresh);
+    actions.append(&library.download);
+    actions.append(&library.delete);
+    page.append(&actions);
+    page.append(&library.progress);
+    page.append(&library.status);
+}
+
+/// List/download/remove widgets for a local Ollama model library, shared by
+/// the vision page and the chat-model manager. `url` is the registry
+/// endpoint; `model` holds the tag the download button pulls.
+struct OllamaLibrary {
+    installed: gtk::DropDown,
+    refresh: gtk::Button,
+    download: gtk::Button,
+    delete: gtk::Button,
+    progress: gtk::ProgressBar,
+    status: gtk::Label,
+}
+
+fn ollama_library_controls(ollama_url: &gtk::Entry, model: &gtk::Entry) -> OllamaLibrary {
+    let installed = gtk::DropDown::from_strings(&["Refresh to list installed models…"]);
+    installed.set_enable_search(true);
+    let refresh = gtk::Button::with_label("Refresh installed models");
+    refresh.add_css_class("nexora-attach");
+    let download = gtk::Button::with_label("Download selected model");
+    download.add_css_class("nexora-attach");
+    let delete = gtk::Button::with_label("Remove installed model");
+    delete.add_css_class("nexora-attach");
+    let progress = gtk::ProgressBar::new();
+    progress.set_show_text(true);
+    progress.set_visible(false);
+    let status = note_label(
+        "Ollama must be running. Downloads come from its registry and remain on this computer.",
+    );
+
+    let url_for_refresh = ollama_url.clone();
+    let installed_for_refresh = installed.clone();
+    let status_for_refresh = status.clone();
+    refresh.connect_clicked(move |_| {
+        status_for_refresh.set_text("Connecting to Ollama…");
+        let url = url_for_refresh.text().to_string();
+        let (tx, rx) = async_channel::bounded(1);
+        runtime().spawn(async move {
+            let _ = tx.send(vision::list_ollama_models(&url).await).await;
+        });
+        let dropdown = installed_for_refresh.clone();
+        let status = status_for_refresh.clone();
+        glib::spawn_future_local(async move {
+            match rx.recv().await {
+                Ok(Ok(models)) => {
+                    let labels: Vec<String> = models
+                        .iter()
+                        .map(|model| {
+                            format!("{} · {}", model.name, vision::format_bytes(model.bytes))
+                        })
+                        .collect();
+                    let values: Vec<&str> = labels.iter().map(String::as_str).collect();
+                    dropdown.set_model(Some(&gtk::StringList::new(&values)));
+                    status.set_text(&format!("{} local models installed", models.len()));
+                }
+                Ok(Err(err)) => status.set_text(&format!("Ollama unavailable: {err:#}")),
+                Err(_) => status.set_text("Ollama lookup was interrupted"),
+            }
+        });
+    });
+
+    let url_for_download = ollama_url.clone();
+    let model_for_download = model.clone();
+    let status_for_download = status.clone();
+    let progress_for_download = progress.clone();
+    let download_button = download.clone();
+    download.connect_clicked(move |_| {
+        let model = model_for_download.text().trim().to_string();
+        if model.is_empty() {
+            status_for_download.set_text("Select a model first");
+            return;
+        }
+        let url = url_for_download.text().to_string();
+        status_for_download.set_text(&format!("Downloading {model}…"));
+        progress_for_download.set_fraction(0.0);
+        progress_for_download.set_text(Some("Starting…"));
+        progress_for_download.set_visible(true);
+        download_button.set_sensitive(false);
+        let (progress_tx, progress_rx) = async_channel::unbounded();
+        let (done_tx, done_rx) = async_channel::bounded(1);
+        runtime().spawn(async move {
+            let result = vision::pull_ollama_model(&url, &model, progress_tx).await;
+            let _ = done_tx.send(result).await;
+        });
+        let status = status_for_download.clone();
+        let bar = progress_for_download.clone();
+        let button = download_button.clone();
+        glib::spawn_future_local(async move {
+            loop {
+                while let Ok(update) = progress_rx.try_recv() {
+                    let text = match (update.completed, update.total) {
+                        (Some(done), Some(total)) if total > 0 => {
+                            bar.set_fraction(done as f64 / total as f64);
+                            format!(
+                                "{} · {:.0}%",
+                                update.status,
+                                done as f64 * 100.0 / total as f64
+                            )
+                        }
+                        _ => update.status,
+                    };
+                    bar.set_text(Some(&text));
+                }
+                if let Ok(result) = done_rx.try_recv() {
+                    button.set_sensitive(true);
+                    match result {
+                        Ok(()) => {
+                            bar.set_fraction(1.0);
+                            bar.set_text(Some("Complete"));
+                            status.set_text(
+                                "Model downloaded. Refresh the installed list to verify it.",
+                            );
+                        }
+                        Err(err) => {
+                            bar.set_visible(false);
+                            status.set_text(&format!("Download failed: {err:#}"));
+                        }
+                    }
+                    break;
+                }
+                glib::timeout_future(Duration::from_millis(100)).await;
+            }
+        });
+    });
+
+    let url_for_delete = ollama_url.clone();
+    let installed_for_delete = installed.clone();
+    let status_for_delete = status.clone();
+    delete.connect_clicked(move |_| {
+        let Some(label) = dropdown_text(&installed_for_delete) else {
+            status_for_delete.set_text("Refresh and select an installed model first");
+            return;
+        };
+        let Some(model) = label.split(" · ").next().map(str::to_string) else {
+            return;
+        };
+        if model.starts_with("Refresh ") {
+            status_for_delete.set_text("Refresh and select an installed model first");
+            return;
+        }
+        let url = url_for_delete.text().to_string();
+        status_for_delete.set_text(&format!("Removing {model}…"));
+        let (tx, rx) = async_channel::bounded(1);
+        runtime().spawn(async move {
+            let _ = tx
+                .send(vision::delete_ollama_model(&url, &model).await)
+                .await;
+        });
+        let status = status_for_delete.clone();
+        glib::spawn_future_local(async move {
+            match rx.recv().await {
+                Ok(Ok(())) => status.set_text("Model removed"),
+                Ok(Err(err)) => status.set_text(&format!("Remove failed: {err:#}")),
+                Err(_) => status.set_text("Remove operation was interrupted"),
+            }
+        });
+    });
+
+    OllamaLibrary {
+        installed,
+        refresh,
+        download,
+        delete,
+        progress,
+        status,
+    }
 }
 
 fn append_vision_fields(page: &gtk::Box, vision: &VisionSettingsWidgets) {

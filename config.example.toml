@@ -136,6 +136,15 @@ save_session = true
 analysis_task = "ask"
 profile = "general"
 
+# Fix words the transcriber keeps getting wrong: slang, jargon, product and
+# people names. The left side is what shows up in the transcript, the right
+# side is what was actually said. Keys match whole words (or word sequences)
+# ignoring case, so short keys never rewrite the middle of another word.
+[meeting.corrections]
+# "clod" = "Claude"
+# "open a i" = "OpenAI"
+# "deep sik" = "DeepSeek"
+
 # ------------------------------------------------------------------
 # Screen understanding — "direct" sends screenshots to the analysis
 # model. "proxy" first asks a separate vision/OCR model for a compact

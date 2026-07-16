@@ -95,8 +95,11 @@ pub fn compiled_gpu_backend() -> Option<&'static str> {
 }
 
 /// Return only the new suffix from two transcripts of overlapping audio.
-/// Exact multi-word overlap is intentionally conservative: when Whisper
-/// revises a phrase, retaining a little duplication is safer than deleting it.
+/// An exact multi-word overlap is preferred; when Whisper revises the shared
+/// audio ("fechar negócio" → "fechar o negócio") a fuzzy pass still matches
+/// the overlap as long as the revision stays small (≤ a third of its words),
+/// because re-emitting a whole window duplicates far more than a bounded
+/// mismatch could ever delete.
 pub fn novel_transcript(previous: &str, current: &str) -> String {
     let previous_words: Vec<(&str, String)> = previous
         .split_whitespace()
@@ -109,23 +112,48 @@ pub fn novel_transcript(previous: &str, current: &str) -> String {
         .filter(|(_, normalized)| !normalized.is_empty())
         .collect();
     let max_overlap = previous_words.len().min(current_words.len());
-    for overlap in (2..=max_overlap).rev() {
-        let previous_start = previous_words.len() - overlap;
-        for current_start in 0..=current_words.len() - overlap {
-            let matches = previous_words[previous_start..]
-                .iter()
-                .zip(&current_words[current_start..current_start + overlap])
-                .all(|(left, right)| left.1 == right.1);
-            if matches {
-                return current_words[current_start + overlap..]
-                    .iter()
-                    .map(|(word, _)| *word)
-                    .collect::<Vec<_>>()
-                    .join(" ");
+    for exact in [true, false] {
+        for overlap in (2..=max_overlap).rev() {
+            let budget = if exact { 0 } else { overlap / 3 };
+            if !exact && budget == 0 {
+                continue;
+            }
+            let previous_start = previous_words.len() - overlap;
+            for current_start in 0..=current_words.len() - overlap {
+                let window = &current_words[current_start..current_start + overlap];
+                let matches = if exact {
+                    previous_words[previous_start..]
+                        .iter()
+                        .zip(window)
+                        .all(|(left, right)| left.1 == right.1)
+                } else {
+                    word_distance(&previous_words[previous_start..], window) <= budget
+                };
+                if matches {
+                    return current_words[current_start + overlap..]
+                        .iter()
+                        .map(|(word, _)| *word)
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                }
             }
         }
     }
     current.trim().to_string()
+}
+
+/// Word-level edit distance between two normalized word slices.
+fn word_distance(left: &[(&str, String)], right: &[(&str, String)]) -> usize {
+    let mut previous: Vec<usize> = (0..=right.len()).collect();
+    for (i, (_, left_word)) in left.iter().enumerate() {
+        let mut current = vec![i + 1];
+        for (j, (_, right_word)) in right.iter().enumerate() {
+            let substitution = previous[j] + usize::from(left_word != right_word);
+            current.push(substitution.min(previous[j + 1] + 1).min(current[j] + 1));
+        }
+        previous = current;
+    }
+    previous[right.len()]
 }
 
 fn normalize_word(word: &str) -> String {
@@ -469,6 +497,27 @@ mod tests {
                 "ask what you can do for your country."
             ),
             "country."
+        );
+    }
+
+    /// Observed live: Whisper revised "fechar negócio" into "fechar o negócio"
+    /// between windows, which an exact overlap cannot deduplicate.
+    #[test]
+    fn revised_overlap_still_deduplicates() {
+        assert_eq!(
+            novel_transcript(
+                "aquele esquema tá daora, bora fechar negócio logo com a góssia",
+                "bora fechar o negócio logo com a galera"
+            ),
+            "galera"
+        );
+    }
+
+    #[test]
+    fn unrelated_transcripts_are_kept_whole() {
+        assert_eq!(
+            novel_transcript("falamos de outra coisa antes", "o orçamento ficou aprovado"),
+            "o orçamento ficou aprovado"
         );
     }
 
