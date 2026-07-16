@@ -1,17 +1,5 @@
-mod app;
-mod config;
-mod conversation;
-mod hidden;
-mod meeting;
-mod providers;
-mod screenshot;
-mod ui;
-mod vision;
-mod whisper;
-
-use std::sync::OnceLock;
-
 use clap::{Parser, Subcommand};
+use nexora::{app, config, hidden};
 
 #[derive(Parser)]
 #[command(
@@ -82,18 +70,6 @@ enum ConfigAction {
     Init,
     /// Print the config file path
     Path,
-}
-
-/// Tokio runtime for network and portal I/O (GTK owns the main thread).
-pub fn runtime() -> &'static tokio::runtime::Runtime {
-    static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
-    RUNTIME.get_or_init(|| {
-        tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
-            .enable_all()
-            .build()
-            .expect("failed to start tokio runtime")
-    })
 }
 
 fn main() -> std::process::ExitCode {
