@@ -29,6 +29,15 @@ terminal through the preview proves pointer and keyboard forwarding — plain
 output mirroring never does. The preview is killed during teardown, before the
 output is removed.
 
+The headless output is placed at a distant layout position (`20000x0`) with no
+edge shared with any physical monitor. A live run showed why: with `auto`
+positioning the virtual output is adjacent, so the cursor wanders onto it,
+windows can be dragged across in both directions, and Nexora itself can stray
+onto the shared output — where an active anti-capture rule renders it as a
+black rectangle in captures, exactly the redaction Safe Share must never show.
+Compositor keybinds always act on the real session; they are not forwarded
+into the preview.
+
 Note two teardown behaviors observed on Hyprland: windows left on the shared
 workspace jump to the physical monitor when the output is removed, and a
 consumer that is already streaming the output does not necessarily stop when

@@ -14,6 +14,9 @@ const OUTPUT: &str = "NEXORA-SAFE-SHARE";
 const WORKSPACE: &str = "99";
 const MARKER_ARG: &str = "--marker";
 const VNC_PORT: &str = "5999";
+// Far from any plausible physical layout, with no shared edge: the cursor
+// cannot wander onto the shared output and windows cannot be dragged across.
+const OUTPUT_POSITION: &str = "20000x0";
 
 fn main() -> ExitCode {
     if env::args().any(|arg| arg == MARKER_ARG) {
@@ -153,7 +156,7 @@ fn run_hyprland_probe() -> ExitCode {
         &[
             "keyword",
             "monitor",
-            &format!("{OUTPUT},1920x1080@60,auto,1"),
+            &format!("{OUTPUT},1920x1080@60,{OUTPUT_POSITION},1"),
         ],
     );
     let marker_started = start_hyprland_marker();
@@ -259,6 +262,10 @@ fn start_preview() -> Vec<Child> {
 
     println!("  Click the terminal inside the preview and type. Input forwarding is");
     println!("  proven only if keystrokes land in the terminal on {OUTPUT}.");
+    println!("  The shared output sits at {OUTPUT_POSITION} with no shared edge: the");
+    println!("  cursor and window drags cannot cross outputs, so use the preview.");
+    println!("  Compositor keybinds (workspace switching, focus) act on the real");
+    println!("  session and are never forwarded into the preview.");
     println!("  Close apps from inside the preview before teardown; leftover windows");
     println!("  jump to the physical monitor when the output is removed.");
     children
