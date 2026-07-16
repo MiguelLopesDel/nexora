@@ -146,7 +146,7 @@ pub fn append_meeting_transcript_context(
     let question = text.clone();
     if let Some(context) = meeting_transcript_context(&question, transcript, max_chars) {
         text.push_str(
-            "\n\nLive session context selected from the transcript. Treat transcription as potentially imperfect and ground the answer only in this evidence:\n",
+            "\n\nLive session context selected from the transcript. Treat transcription as potentially imperfect; ground claims about the conversation in this evidence. If the question goes beyond what was said, answer it from general knowledge and say that the audio does not cover it:\n",
         );
         text.push_str(&context);
     }
@@ -257,10 +257,6 @@ fn tail_chars(text: &str, max_chars: usize) -> String {
     text.chars().skip(count.saturating_sub(max_chars)).collect()
 }
 
-fn can_send_manual_question(meeting_active: bool, transcript: &[String]) -> bool {
-    !meeting_active || !transcript.is_empty()
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MeetingEventSurface {
     Status,
@@ -288,12 +284,11 @@ fn visible_coaching_text(text: &str) -> Option<&str> {
     .then_some(text)
 }
 
-fn should_wait_for_fresh_transcript(
-    meeting_active: bool,
-    transcript_len_at_submit: usize,
-    current_transcript_len: usize,
-) -> bool {
-    meeting_active && current_transcript_len <= transcript_len_at_submit
+/// Questions are sent immediately with the transcript available at Enter.
+/// Only a live session that has produced no transcript at all (model still
+/// warming up, opening silence) briefly waits for the first line.
+fn should_wait_for_first_transcript(meeting_active: bool, transcript_len: usize) -> bool {
+    meeting_active && transcript_len == 0
 }
 
 impl Overlay {
@@ -789,7 +784,6 @@ impl Overlay {
     }
 
     async fn run_ask(self: &Rc<Self>, prompt: String, attach_screen: bool, task_name: String) {
-        let transcript_len_at_submit = self.meeting_transcript.borrow().len();
         // Capture first so a failure doesn't leave a half-formed turn.
         let image = if attach_screen {
             self.set_status("capturing screen…");
@@ -869,18 +863,16 @@ impl Overlay {
             }
         }
 
-        self.wait_for_fresh_meeting_transcript(transcript_len_at_submit)
-            .await;
-        if !can_send_manual_question(
-            self.meeting_stop.borrow().is_some(),
-            &self.meeting_transcript.borrow(),
-        ) {
-            self.entry.set_text(&prompt);
-            self.set_status("question not sent · live transcript is still unavailable");
+        self.wait_for_first_meeting_transcript().await;
+        // A live session without any transcript yet (model warming up, silent
+        // stretch) must not block the user: send the question anyway and say
+        // clearly that no meeting context was attached.
+        let missing_live_context =
+            self.meeting_stop.borrow().is_some() && self.meeting_transcript.borrow().is_empty();
+        if missing_live_context {
             self.show_system_line(
-                "No speech was transcribed in time, so Nexora did not send a context-free request or consume model tokens. Check the audio source, choose a faster Whisper model, or try again when a Transcript line appears.",
+                "No speech has been transcribed yet, so this question was sent without live meeting context.",
             );
-            return;
         }
 
         self.conversation
@@ -941,11 +933,10 @@ impl Overlay {
         self.set_status("");
     }
 
-    async fn wait_for_fresh_meeting_transcript(&self, transcript_len_at_submit: usize) {
+    async fn wait_for_first_meeting_transcript(&self) {
         let meeting_active = self.meeting_stop.borrow().is_some();
         let current_len = self.meeting_transcript.borrow().len();
-        if !should_wait_for_fresh_transcript(meeting_active, transcript_len_at_submit, current_len)
-        {
+        if !should_wait_for_first_transcript(meeting_active, current_len) {
             return;
         }
 
@@ -960,10 +951,9 @@ impl Overlay {
         }
         let timeout = Duration::from_millis(timeout_ms);
         let deadline = Instant::now() + timeout;
-        self.set_status("syncing the latest live context…");
+        self.set_status("waiting for the first transcript line…");
         while Instant::now() < deadline {
-            if self.meeting_transcript.borrow().len() > transcript_len_at_submit
-                || self.meeting_stop.borrow().is_none()
+            if !self.meeting_transcript.borrow().is_empty() || self.meeting_stop.borrow().is_none()
             {
                 break;
             }
@@ -2995,19 +2985,9 @@ mod tests {
 
     #[test]
     fn manual_question_waits_for_first_transcript_while_capture_is_active() {
-        assert!(should_wait_for_fresh_transcript(true, 0, 0));
-        assert!(!should_wait_for_fresh_transcript(true, 0, 1));
-        assert!(!should_wait_for_fresh_transcript(false, 0, 0));
-    }
-
-    #[test]
-    fn manual_question_is_not_sent_without_context_during_active_session() {
-        assert!(!can_send_manual_question(true, &[]));
-        assert!(can_send_manual_question(
-            true,
-            &["E para os caras ficarem no Brasil?".into()]
-        ));
-        assert!(can_send_manual_question(false, &[]));
+        assert!(should_wait_for_first_transcript(true, 0));
+        assert!(!should_wait_for_first_transcript(true, 1));
+        assert!(!should_wait_for_first_transcript(false, 0));
     }
 
     #[test]
@@ -3037,10 +3017,9 @@ mod tests {
     }
 
     #[test]
-    fn manual_question_waits_for_an_inflight_audio_window() {
-        assert!(should_wait_for_fresh_transcript(true, 3, 3));
-        assert!(!should_wait_for_fresh_transcript(true, 3, 4));
-        assert!(!should_wait_for_fresh_transcript(false, 3, 3));
+    fn manual_question_sends_instantly_once_any_transcript_exists() {
+        assert!(!should_wait_for_first_transcript(true, 3));
+        assert!(!should_wait_for_first_transcript(false, 3));
     }
 
     #[test]

@@ -186,8 +186,9 @@ pub struct MeetingConfig {
     /// so words cut at chunk boundaries are heard again with surrounding audio.
     #[serde(default = "default_transcription_window_seconds")]
     pub transcription_window_seconds: u64,
-    /// Maximum time to wait for an in-flight transcript update before sending
-    /// a manual question. Zero sends immediately.
+    /// Manual questions are sent immediately with the transcript available at
+    /// Enter. Only a session with no transcript at all yet waits up to this
+    /// long for the first line. Zero never waits.
     #[serde(default = "default_question_context_wait_ms")]
     pub question_context_wait_ms: u64,
     /// Maximum transcript characters attached to a manual question. Context

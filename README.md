@@ -92,8 +92,11 @@ Open ⚙ and configure the **Live meeting assistant** section before pressing �
 
 Manual questions remain in **Chat**. Transcript fragments, translations, coaching,
 and summaries live on the separate **Live** page and never become chat turns.
-When a live question is submitted, the configurable context-sync delay briefly
-waits for an in-flight transcript update; set it to `0` for immediate sending.
+A live question is sent immediately with the transcript available the moment
+you press Enter. Only a session that has produced no transcript at all yet
+(model warming up, opening silence) briefly waits for the first line — and if
+none arrives in time, the question is still sent, clearly marked as having no
+live context.
 The active session keeps its complete text transcript locally. Each question
 sends only a configurable, token-bounded mix of recent speech and older
 fragments retrieved from the question, so long sessions do not become an

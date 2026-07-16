@@ -103,8 +103,9 @@ chunk_seconds = 2
 # Local Whisper analyzes a rolling 4-second window every 2 seconds. The overlap
 # preserves words split at capture boundaries without delaying every update 4s.
 transcription_window_seconds = 4
-# Wait briefly for speech still being transcribed before a manual question is
-# sent. Set 0 for the lowest latency; increase for more complete live context.
+# Manual questions are sent immediately with the transcript available when
+# you press Enter. Only a session with no transcript at all yet (model still
+# warming up, opening silence) waits up to this long for the first line.
 question_context_wait_ms = 1200
 # Character budget sent with manual questions. Nexora keeps the full local
 # transcript and fills this budget with recent + question-relevant older speech.
