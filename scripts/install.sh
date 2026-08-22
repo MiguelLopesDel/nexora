@@ -11,8 +11,9 @@
 #     This clones (or updates, on a later run) main into
 #     ~/.local/share/nexora/src and builds from there.
 #
-# Arch/pacman users: use packaging/aur/PKGBUILD (or the AUR package once
-# published) instead of this script.
+# Works on Arch/pacman too. Prefer packaging/aur/PKGBUILD (makepkg -si) or
+# the AUR package if you want pacman to track nexora as an installed
+# package; this script is the no-AUR-account fallback.
 set -euo pipefail
 
 REPO_URL="https://github.com/MiguelLopesDel/nexora.git"
@@ -53,9 +54,12 @@ install_deps() {
             gtk4-devel gtk4-layer-shell-devel pulseaudio-utils \
             cmake gcc-c++ clang-devel vulkan-loader-devel glslc
     elif command -v pacman >/dev/null; then
-        echo "This is an Arch-based system: use packaging/aur/PKGBUILD" \
-            "(makepkg -si) or the AUR package instead of this script."
-        exit 1
+        echo "==> Installing build/runtime dependencies (pacman)"
+        echo "    (packaging/aur/PKGBUILD via makepkg -si is the alternative" \
+            "if you'd rather have pacman track the install as a package.)"
+        sudo pacman -S --needed \
+            gtk4 gtk4-layer-shell libpulse cmake gcc clang \
+            vulkan-headers vulkan-icd-loader shaderc
     else
         echo "Unrecognized package manager. Install the dependencies listed" \
             "in README.md manually, then re-run with --skip-deps."
