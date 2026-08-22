@@ -10,7 +10,7 @@ depends=('gtk4' 'gtk4-layer-shell' 'libpulse' 'vulkan-icd-loader')
 makedepends=('cargo' 'cmake' 'clang' 'vulkan-headers' 'shaderc')
 optdepends=('ollama: local Vision/OCR and chat models')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('REPLACE_WITH_REAL_SHA256_AFTER_TAG_IS_PUSHED')
+sha256sums=('621f0e24db964be5c919e358a4dacecc4243433c874d045036e4382166a9c67d')
 
 build() {
     cd "$pkgname-$pkgver"
