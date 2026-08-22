@@ -1,0 +1,22 @@
+pkgbase = nexora
+	pkgdesc = Featherweight AI overlay assistant for Linux (Wayland-first)
+	pkgver = 0.1.0
+	pkgrel = 1
+	url = https://github.com/MiguelLopesDel/nexora
+	arch = x86_64
+	arch = aarch64
+	license = AGPL-3.0-only
+	makedepends = cargo
+	makedepends = cmake
+	makedepends = clang
+	makedepends = vulkan-headers
+	makedepends = shaderc
+	depends = gtk4
+	depends = gtk4-layer-shell
+	depends = libpulse
+	depends = vulkan-icd-loader
+	optdepends = ollama: local Vision/OCR and chat models
+	source = nexora-0.1.0.tar.gz::https://github.com/MiguelLopesDel/nexora/archive/refs/tags/v0.1.0.tar.gz
+	sha256sums = REPLACE_WITH_REAL_SHA256_AFTER_TAG_IS_PUSHED
+
+pkgname = nexora

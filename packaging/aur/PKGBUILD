@@ -1,0 +1,27 @@
+# Maintainer: Miguel Lopes Delmondes <miguellopesdelmondes2@gmail.com>
+pkgname=nexora
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Featherweight AI overlay assistant for Linux (Wayland-first)"
+arch=('x86_64' 'aarch64')
+url="https://github.com/MiguelLopesDel/nexora"
+license=('AGPL-3.0-only')
+depends=('gtk4' 'gtk4-layer-shell' 'libpulse' 'vulkan-icd-loader')
+makedepends=('cargo' 'cmake' 'clang' 'vulkan-headers' 'shaderc')
+optdepends=('ollama: local Vision/OCR and chat models')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('REPLACE_WITH_REAL_SHA256_AFTER_TAG_IS_PUSHED')
+
+build() {
+    cd "$pkgname-$pkgver"
+    export RUSTUP_TOOLCHAIN=stable
+    cargo build --release --locked
+}
+
+package() {
+    cd "$pkgname-$pkgver"
+    install -Dm755 target/release/nexora "$pkgdir/usr/bin/nexora"
+    install -Dm644 assets/dev.nexora.Nexora.desktop \
+        "$pkgdir/usr/share/applications/dev.nexora.Nexora.desktop"
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

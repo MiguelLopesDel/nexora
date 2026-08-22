@@ -44,6 +44,16 @@ On Hyprland the rule keyword and syntax changed across versions. Nexora tries cu
 
 ## Installing
 
+### Arch Linux (AUR)
+
+```bash
+yay -S nexora   # or: paru -S nexora
+```
+
+Builds from source against the same dependencies listed below. See
+[`packaging/aur/`](packaging/aur/) if you want to build the PKGBUILD directly
+with `makepkg` instead of an AUR helper.
+
 ### Dependencies
 
 - GTK 4 ≥ 4.10, gtk4-layer-shell, `xdg-desktop-portal`, and `parec` (PulseAudio utilities; it also works with PipeWire's Pulse compatibility layer).
@@ -61,11 +71,17 @@ sudo dnf install gtk4-devel gtk4-layer-shell-devel pulseaudio-utils cmake gcc-c+
 sudo pacman -S gtk4 gtk4-layer-shell libpulse cmake gcc clang vulkan-headers vulkan-icd-loader shaderc
 ```
 
-### Build
+### Build (other distros)
 
 ```bash
 git clone https://github.com/MiguelLopesDel/nexora
 cd nexora
+./scripts/install.sh   # installs the deps above, builds, and installs into ~/.local
+```
+
+Or do it by hand:
+
+```bash
 cargo build --release
 install -Dm755 target/release/nexora ~/.local/bin/nexora
 ```
