@@ -97,19 +97,23 @@ try_prebuilt() {
         | head -1 | grep -o 'https://[^"]*') || return 1
     [[ -n "$asset_url" ]] || return 1
 
-    echo "==> Downloading prebuilt binary: $(basename "$asset_url")"
+    local asset_name
+    asset_name="$(basename "$asset_url")"
+    echo "==> Downloading prebuilt binary: $asset_name"
     local tmp
     tmp="$(mktemp -d)"
     trap 'rm -rf "$tmp"' RETURN
-    curl -fsSL -o "$tmp/nexora.tar.gz" "$asset_url" || return 1
-    curl -fsSL -o "$tmp/nexora.tar.gz.sha256" "$asset_url.sha256" 2>/dev/null || true
-    if [[ -s "$tmp/nexora.tar.gz.sha256" ]]; then
-        (cd "$tmp" && sha256sum -c nexora.tar.gz.sha256) || {
+    curl -fsSL -o "$tmp/$asset_name" "$asset_url" || return 1
+    # sha256sum -c matches by the filename recorded *inside* the checksum
+    # file, so the local copy must keep the asset's original name.
+    curl -fsSL -o "$tmp/$asset_name.sha256" "$asset_url.sha256" 2>/dev/null || true
+    if [[ -s "$tmp/$asset_name.sha256" ]]; then
+        (cd "$tmp" && sha256sum -c "$asset_name.sha256") || {
             echo "checksum mismatch, discarding download" >&2
             return 1
         }
     fi
-    tar -xzf "$tmp/nexora.tar.gz" -C "$tmp" || return 1
+    tar -xzf "$tmp/$asset_name" -C "$tmp" || return 1
     local extracted
     extracted="$(find "$tmp" -maxdepth 1 -type d -name 'nexora-*')"
     [[ -n "$extracted" && -x "$extracted/nexora" ]] || return 1
