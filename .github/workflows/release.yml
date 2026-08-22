@@ -1,0 +1,51 @@
+name: Release
+
+# Builds a release binary and attaches it to the GitHub Release for the tag,
+# so `install.sh` can download a prebuilt binary instead of compiling from
+# source. Vulkan (the default feature) only, x86_64 only, for now.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-release:
+    runs-on: ubuntu-latest
+    container: fedora:latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: dnf install -y gcc gcc-c++ cmake clang-devel gtk4-devel gtk4-layer-shell-devel openssl-devel curl tar xz vulkan-loader-devel glslc
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Package the release archive
+        id: package
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          name="nexora-${version}-x86_64-linux-gnu"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          mkdir "$name"
+          cp target/release/nexora "$name/"
+          cp assets/dev.nexora.Nexora.desktop "$name/"
+          cp LICENSE README.md "$name/"
+          tar -czf "$name.tar.gz" "$name"
+          sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
+
+      - name: Publish to the GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ steps.package.outputs.name }}.tar.gz
+            ${{ steps.package.outputs.name }}.tar.gz.sha256
