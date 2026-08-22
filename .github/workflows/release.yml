@@ -8,6 +8,10 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build and attach the binary to (e.g. v0.1.0)"
+        required: true
 
 env:
   CARGO_TERM_COLOR: always
@@ -20,6 +24,8 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
 
       - name: Install system dependencies
         run: dnf install -y gcc gcc-c++ cmake clang-devel gtk4-devel gtk4-layer-shell-devel openssl-devel curl tar xz vulkan-loader-devel glslc
@@ -33,7 +39,8 @@ jobs:
       - name: Package the release archive
         id: package
         run: |
-          version="${GITHUB_REF_NAME#v}"
+          tag="${{ inputs.tag || github.ref_name }}"
+          version="${tag#v}"
           name="nexora-${version}-x86_64-linux-gnu"
           echo "name=$name" >> "$GITHUB_OUTPUT"
           mkdir "$name"
@@ -46,6 +53,7 @@ jobs:
       - name: Publish to the GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
           files: |
             ${{ steps.package.outputs.name }}.tar.gz
             ${{ steps.package.outputs.name }}.tar.gz.sha256
