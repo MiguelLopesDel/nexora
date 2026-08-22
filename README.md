@@ -74,10 +74,13 @@ sudo pacman -S gtk4 gtk4-layer-shell libpulse cmake gcc clang vulkan-headers vul
 ### Build (other distros)
 
 ```bash
-git clone https://github.com/MiguelLopesDel/nexora
-cd nexora
-./scripts/install.sh   # installs the deps above, builds, and installs into ~/.local
+curl -fsSL https://raw.githubusercontent.com/MiguelLopesDel/nexora/main/scripts/install.sh | bash
 ```
+
+Installs the deps above, builds, and installs into `~/.local` — no manual
+clone needed. It checks out the source to `~/.local/share/nexora/src` and
+re-uses (updates) that checkout on later runs. Already have a clone? Run
+`./scripts/install.sh` from inside it instead, same effect.
 
 Or do it by hand:
 

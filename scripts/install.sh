@@ -1,14 +1,43 @@
 #!/usr/bin/env bash
 # One-shot local install: system deps (apt/dnf), cargo build --release, and
-# copy the binary + desktop entry into the user's XDG dirs. Run from a clone
-# of this repo. Never re-runs itself or checks for updates — see `nexora
-# update` for that (todo) or just re-run this script after `git pull`.
+# copy the binary + desktop entry into the user's XDG dirs. Never re-runs
+# itself or checks for updates — see `nexora update` for that (todo), or just
+# re-run this script (it updates its own checkout when piped, see below).
+#
+# Works two ways:
+#   - From a clone of this repo: ./scripts/install.sh
+#   - Piped straight from GitHub, no clone needed:
+#       curl -fsSL https://raw.githubusercontent.com/MiguelLopesDel/nexora/main/scripts/install.sh | bash
+#     This clones (or updates, on a later run) main into
+#     ~/.local/share/nexora/src and builds from there.
 #
 # Arch/pacman users: use packaging/aur/PKGBUILD (or the AUR package once
 # published) instead of this script.
 set -euo pipefail
 
-repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_URL="https://github.com/MiguelLopesDel/nexora.git"
+CHECKOUT_DIR="$HOME/.local/share/nexora/src"
+
+script_path="${BASH_SOURCE[0]:-}"
+if [[ -n "$script_path" && -f "$script_path" ]]; then
+    # Running from a real file: assume it's a checkout of this repo.
+    repo_root="$(cd "$(dirname "$script_path")/.." && pwd)"
+else
+    # Piped in (curl | bash): no local checkout to run from yet.
+    if ! command -v git >/dev/null; then
+        echo "git not found; install it first (needed to fetch the source)."
+        exit 1
+    fi
+    if [[ -d "$CHECKOUT_DIR/.git" ]]; then
+        echo "==> Updating existing checkout in $CHECKOUT_DIR"
+        git -C "$CHECKOUT_DIR" pull --ff-only
+    else
+        echo "==> Cloning nexora into $CHECKOUT_DIR"
+        mkdir -p "$(dirname "$CHECKOUT_DIR")"
+        git clone "$REPO_URL" "$CHECKOUT_DIR"
+    fi
+    repo_root="$CHECKOUT_DIR"
+fi
 cd "$repo_root"
 
 install_deps() {
