@@ -1,0 +1,46 @@
+name: Transcription bench
+
+# End-to-end quality/latency gate (WER + latency thresholds baked into the
+# binary, see src/bin/transcription_bench.rs). Needs a live PulseAudio loop
+# and TTS synthesis, both fragile on a shared runner, so this stays on-demand
+# and nightly rather than a per-PR gate.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 4 * * *"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    container: fedora:latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          dnf install -y gcc gcc-c++ cmake clang-devel gtk4-devel gtk4-layer-shell-devel \
+            openssl-devel curl tar xz vulkan-loader-devel glslc \
+            pulseaudio-utils espeak-ng
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Download the tiny whisper model
+        run: |
+          mkdir -p ~/.local/share/nexora/whisper
+          curl -fL -o ~/.local/share/nexora/whisper/ggml-tiny.bin \
+            https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin
+
+      - name: Start a dummy PulseAudio server
+        run: |
+          pulseaudio --start --exit-idle-time=-1
+          pactl load-module module-null-sink sink_name=bench_sink
+
+      - name: Build the bench binary
+        run: cargo build --release --bin transcription_bench
+
+      - name: Run the bench (WER + latency gates)
+        run: ./target/release/transcription_bench --model tiny

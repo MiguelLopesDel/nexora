@@ -1,3 +1,8 @@
+// Quality gate: no file over 500 lines, no function over 100 lines or
+// cognitive complexity 25 (see clippy.toml). Split the module instead of
+// allow()-ing this away.
+#![warn(clippy::too_many_lines, clippy::cognitive_complexity)]
+
 use clap::{Parser, Subcommand};
 use nexora::{app, config, hidden};
 

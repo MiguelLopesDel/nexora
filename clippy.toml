@@ -1,0 +1,4 @@
+# Pin the complexity/size thresholds explicitly so a future clippy release
+# can't silently loosen the quality gate.
+too-many-lines-threshold = 100
+cognitive-complexity-threshold = 25

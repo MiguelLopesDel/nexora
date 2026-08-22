@@ -23,18 +23,36 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
+          components: rustfmt, clippy, llvm-tools-preview
 
       - uses: Swatinem/rust-cache@v2
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny,cargo-audit,cargo-llvm-cov
 
       - name: Format
         run: cargo fmt --check
 
-      - name: Clippy
+      - name: File size gate
+        run: ./scripts/check_file_sizes.sh
+
+      - name: Clippy (includes complexity/size lints, see clippy.toml)
         run: cargo clippy --all-targets -- -D warnings
+
+      - name: Dependency licenses, bans, and sources
+        run: cargo deny check
+
+      - name: Security advisories
+        run: cargo audit
 
       - name: Tests
         run: cargo test
+
+      - name: Coverage gate
+        # Baseline measured 2026-08-21: ~23% lines/regions. Floor is set a
+        # couple points under that so it can only go up over time, not down.
+        run: cargo llvm-cov --fail-under-lines 20
 
       - name: Release build
         run: cargo build --release

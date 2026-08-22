@@ -9,10 +9,29 @@ Thanks for wanting to help! Bug reports, ideas and pull requests are all welcome
 3. Before opening the PR, make sure the checks pass locally:
    ```bash
    cargo fmt --check
+   ./scripts/check_file_sizes.sh
    cargo clippy --all-targets -- -D warnings
+   cargo deny check
+   cargo audit
    cargo test
+   cargo llvm-cov --fail-under-lines 20
    ```
+   Run `git config core.hooksPath .githooks` once to get the fast subset of
+   these (fmt, file size, clippy) checked automatically on every commit.
 4. Keep commits and code comments in English.
+
+### Quality gate
+
+No tracked `.rs` file may exceed 500 lines, and no function may exceed 100
+lines or a cognitive complexity of 25 (`clippy.toml`; enforced via
+`#![warn(clippy::too_many_lines, clippy::cognitive_complexity)]` in each crate
+root). If a file or function is about to cross that line, split it into a
+module instead of raising the limit — see how `src/config.rs`, `src/meeting.rs`,
+and `src/ui/overlay.rs` are organized as modules for the pattern to follow.
+Dependency licenses and security advisories are gated by `cargo deny` /
+`cargo audit`; adding a dependency with a new license means adding it to
+`deny.toml`'s `licenses.allow` deliberately, not widening it to something
+permissive.
 
 ### Faster builds (optional)
 

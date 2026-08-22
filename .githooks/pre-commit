@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Local convenience gate, mirrors the CI checks that are cheap enough to run
+# on every commit. Enable with: git config core.hooksPath .githooks
+set -euo pipefail
+
+cd "$(git rev-parse --show-toplevel)"
+
+echo "pre-commit: cargo fmt --check"
+cargo fmt --check
+
+echo "pre-commit: file size gate"
+./scripts/check_file_sizes.sh
+
+echo "pre-commit: clippy"
+cargo clippy --all-targets -- -D warnings
